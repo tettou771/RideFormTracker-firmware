@@ -167,6 +167,22 @@ void vqf_get_relative_rest_deviations(float *out)
 	getRelativeRestDeviations(&params, &state, out);
 }
 
+// RFT experiment: expose mag disturbance state for logging (see MAG_CALIBRATION.md)
+bool vqf_get_mag_dist_detected(void)
+{
+	return getMagDistDetected(&state);
+}
+
+float vqf_get_mag_ref_norm(void)
+{
+	return getMagRefNorm(&state);
+}
+
+float vqf_get_mag_ref_dip(void)
+{
+	return getMagRefDip(&state);
+}
+
 const sensor_fusion_t sensor_fusion_vqf = {
 	*vqf_init,
 	*vqf_load,

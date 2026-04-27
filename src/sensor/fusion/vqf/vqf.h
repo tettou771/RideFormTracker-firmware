@@ -45,6 +45,11 @@ void vqf_get_quat(float *q);
 bool vqf_get_rest_detected(void);
 void vqf_get_relative_rest_deviations(float *out);
 
+// RFT experiment: mag disturbance state accessors (see MAG_CALIBRATION.md)
+bool vqf_get_mag_dist_detected(void);
+float vqf_get_mag_ref_norm(void);
+float vqf_get_mag_ref_dip(void);
+
 extern const sensor_fusion_t sensor_fusion_vqf;
 
 #endif

@@ -525,6 +525,8 @@ static void esb_thread(void)
 			if (use_shutdown && k_uptime_get() - last_tx_success > CONFIG_3_SETTINGS_READ(CONFIG_3_CONNECTION_TIMEOUT_DELAY)) // shutdown if receiver is not detected // TODO: is shutdown necessary if usb is connected at the time?
 			{
 				LOG_WRN("No response from receiver in %dm", CONFIG_3_SETTINGS_READ(CONFIG_3_CONNECTION_TIMEOUT_DELAY) / 60000);
+				printk("RFT_SHUTDOWN: esb tx_errors timeout\n");
+				k_msleep(500);
 				sys_request_system_off(false);
 			}
 		}

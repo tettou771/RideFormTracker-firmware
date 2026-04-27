@@ -33,6 +33,10 @@
 #include "sensors.h"
 
 #include "sensor.h"
+#include "mag_bias_rls.h"
+
+// RFT experiment: online hard iron estimator (see MAG_CALIBRATION.md)
+static rls_sphere_t mag_rls;
 
 #define SPI_OP SPI_MODE_CPOL | SPI_MODE_CPHA | SPI_WORD_SET(8)
 
@@ -608,17 +612,25 @@ static void sensor_update_sensor_state(void)
 			{
 				LOG_INF("No motion from sensors in %dm", CONFIG_3_SETTINGS_READ(CONFIG_3_ACTIVE_TIMEOUT_DELAY) / 60000);
 				// Queue power state request, it is possible for the request to be overridden so the thread may continue unaware
-				if (CONFIG_2_SETTINGS_READ(CONFIG_2_ACTIVE_TIMEOUT_MODE) == 0 && CONFIG_0_SETTINGS_READ(CONFIG_0_USE_IMU_WAKE_UP))
+				if (CONFIG_2_SETTINGS_READ(CONFIG_2_ACTIVE_TIMEOUT_MODE) == 0 && CONFIG_0_SETTINGS_READ(CONFIG_0_USE_IMU_WAKE_UP)) {
+					printk("RFT_SHUTDOWN: sensor activity timeout (WOM mode 0)\n");
+					k_msleep(500);
 					sys_request_WOM(true, false);
+				}
 				// Queue power state request, thread will be suspended when entering system_off
-				if (CONFIG_2_SETTINGS_READ(CONFIG_2_ACTIVE_TIMEOUT_MODE) == 1 && CONFIG_0_SETTINGS_READ(CONFIG_0_USER_SHUTDOWN))
+				if (CONFIG_2_SETTINGS_READ(CONFIG_2_ACTIVE_TIMEOUT_MODE) == 1 && CONFIG_0_SETTINGS_READ(CONFIG_0_USER_SHUTDOWN)) {
+					printk("RFT_SHUTDOWN: sensor activity timeout (off mode 1)\n");
+					k_msleep(500);
 					sys_request_system_off(false);
+				}
 				sensor_timeout = SENSOR_SENSOR_TIMEOUT_ACTIVITY_ELAPSED; // only try to suspend once
 			}
 		}
 		if (CONFIG_1_SETTINGS_READ(CONFIG_1_USE_IMU_TIMEOUT) && CONFIG_0_SETTINGS_READ(CONFIG_0_USE_IMU_WAKE_UP) && sensor_timeout == SENSOR_SENSOR_TIMEOUT_IMU && last_data_delta > imu_timeout) // No motion in ramp time
 		{
 			LOG_INF("No motion from sensors in %llds", imu_timeout / 1000);
+			printk("RFT_SHUTDOWN: imu_timeout (no motion %llds) -> WOM\n", imu_timeout / 1000);
+			k_msleep(500);
 			// Queue power state request
 			sys_request_WOM(false, false);
 			sensor_timeout = SENSOR_SENSOR_TIMEOUT_IMU_ELAPSED; // only try to suspend once
@@ -678,6 +690,8 @@ int sensor_init(void)
 
 	// get mag enable from config
 	mag_enabled = CONFIG_1_SETTINGS_READ(CONFIG_1_SENSOR_USE_MAG);
+	// RFT diagnostic: force-disable mag to test if I2C activity causes glitches
+	mag_enabled = false;
 
 	// setup sensor, set ODR
 	float accel_initial_time = 1.0 / CONFIG_2_SETTINGS_READ(CONFIG_2_SENSOR_ACCEL_ODR);
@@ -706,6 +720,10 @@ int sensor_init(void)
 		if (err < 0)
 			return err;
 // 0-1ms to setup mmc
+
+		// RFT experiment: initialize online hard iron estimator
+		// lambda=0.9999 (~10k sample effective window), P0=1e3 (weak prior)
+		rls_sphere_init(&mag_rls, 0.9999f, 1000.0f);
 	}
 	LOG_INF("Initialized sensors");
 
@@ -962,23 +980,64 @@ void sensor_loop(void)
 				total_mag_samples++;
 #endif
 				last_mag_time = k_uptime_get();
+
+				// RFT experiment toggle (see MAG_CALIBRATION.md):
+				//   0 = upstream behaviour (skip update_mag when uncalibrated)
+				//   1 = feed mag to VQF always + RLS online hard iron estimation
+				#define RFT_MAG_EXPERIMENT 0
+
 				bool mag_calibrated = true;
 				memcpy(last_m, raw_m, sizeof(last_m)); // copy raw magnetometer data
 				sensor_calibration_process_mag(raw_m);
 				float zero_m[3] = {0};
-				if (v_epsilon(raw_m, zero_m, 1e-6)) // if the magnetometer is not calibrated, skip and send raw data
+				if (v_epsilon(raw_m, zero_m, 1e-6)) // if the magnetometer is not calibrated
 				{
 					memcpy(raw_m, last_m, sizeof(last_m));
 					mag_calibrated = false;
+
+#if RFT_MAG_EXPERIMENT
+					// RFT experiment: online hard iron estimation via RLS sphere fit
+					// Only update when there's meaningful motion (>5 deg/s) to avoid P blowup
+					const float gyro_motion_threshold_sq = 5.0f * 5.0f; // (deg/s)^2
+					if (max_gyro_speed_square > gyro_motion_threshold_sq) {
+						rls_sphere_update(&mag_rls, raw_m);
+					}
+					float mag_bias[3];
+					rls_sphere_get_bias(&mag_rls, mag_bias);
+					raw_m[0] -= mag_bias[0];
+					raw_m[1] -= mag_bias[1];
+					raw_m[2] -= mag_bias[2];
+					mag_calibrated = true; // force fusion to run with RLS-corrected mag
+#endif
 				}
 				float mx = raw_m[0];
 				float my = raw_m[1];
 				float mz = raw_m[2];
 				float m[] = {SENSOR_MAGNETOMETER_AXES_ALIGNMENT};
 
-				// Process fusion
-				if (mag_calibrated)
+				// Process fusion (with safety check: skip if non-finite or out of range)
+				bool m_valid = isfinite(m[0]) && isfinite(m[1]) && isfinite(m[2])
+					&& fabsf(m[0]) < 10.0f && fabsf(m[1]) < 10.0f && fabsf(m[2]) < 10.0f;
+				if (mag_calibrated && m_valid)
 					sensor_fusion->update_mag(m, mag_actual_time);
+
+				// RFT experiment: log VQF mag state every 2s to characterize environment
+				static int64_t last_mag_log_time = 0;
+				if (sensor_fusion == &sensor_fusion_vqf && k_uptime_get() - last_mag_log_time > 2000)
+				{
+					last_mag_log_time = k_uptime_get();
+					float mag_norm = sqrtf(m[0]*m[0] + m[1]*m[1] + m[2]*m[2]);
+					float mag_bias[3];
+					rls_sphere_get_bias(&mag_rls, mag_bias);
+					float mag_radius = rls_sphere_get_radius(&mag_rls);
+					LOG_INF("mag: |B|=%.3f dist=%d refNorm=%.3f refDip=%.1fdeg bias=[%.3f %.3f %.3f] r=%.3f",
+						(double)mag_norm,
+						vqf_get_mag_dist_detected() ? 1 : 0,
+						(double)vqf_get_mag_ref_norm(),
+						(double)(vqf_get_mag_ref_dip() * 180.0f / M_PI),
+						(double)mag_bias[0], (double)mag_bias[1], (double)mag_bias[2],
+						(double)mag_radius);
+				}
 
 				v_rotate(m, q3, m); // magnetic field in local device frame, no other transformation will be done
 				connection_update_sensor_mag(m);

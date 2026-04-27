@@ -117,12 +117,12 @@ const int32_t config_3_settings_defaults[16] = {
 #ifdef CONFIG_IMU_TIMEOUT_RAMP_MIN
 	CONFIG_IMU_TIMEOUT_RAMP_MIN,
 #else
-	5000,
+	600000, // RFT: 10 min (was 5s) — bike usage doesn't sit still long enough for fast WOM
 #endif
 #ifdef CONFIG_IMU_TIMEOUT_RAMP_MAX
 	CONFIG_IMU_TIMEOUT_RAMP_MAX,
 #else
-	15000,
+	600000, // RFT: 10 min (was 15s)
 #endif
 #ifdef CONFIG_ACTIVE_TIMEOUT_THRESHOLD
 	CONFIG_ACTIVE_TIMEOUT_THRESHOLD,

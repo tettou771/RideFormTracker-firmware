@@ -337,6 +337,8 @@ static void sys_WOM(bool force) // TODO: if IMU interrupt does not exist what do
 
 static void sys_system_off(bool silent) // TODO: add timeout
 {
+	printk("RFT_SHUTDOWN: enter sys_system_off silent=%d\n", silent);
+	k_msleep(300);
 	LOG_INF("System off requested");
 	configure_system_off(); // Common subsystem shutdown and prepare sense pins
 	int64_t start_time = k_uptime_get();
@@ -618,6 +620,9 @@ static void power_thread(void)
 				LOG_WRN("Discharged battery");
 				sys_update_battery_tracker(0, device_plugged);
 			}
+			printk("RFT_SHUTDOWN: battery_discharged=%d device_plugged=%d docked=%d battery_mV=%d\n",
+				battery_discharged, device_plugged, docked, battery_mV);
+			k_msleep(500);
 			sys_request_system_off(true);
 		}
 
