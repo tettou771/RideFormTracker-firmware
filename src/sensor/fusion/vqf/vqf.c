@@ -188,6 +188,11 @@ float vqf_get_mag_ref_dip(void)
 	return getMagRefDip(&state);
 }
 
+float vqf_get_last_mag_dis_angle(void)
+{
+	return state.lastMagDisAngle;
+}
+
 const sensor_fusion_t sensor_fusion_vqf = {
 	*vqf_init,
 	*vqf_load,

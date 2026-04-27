@@ -34,6 +34,9 @@ void connection_set_id(uint8_t id);
 void connection_update_sensor_ids(int imu_id, int mag_id);
 void connection_update_sensor_data(float *q, float *a, int64_t data_time); // ticks
 void connection_update_sensor_mag(float *m);
+
+// RFT: diagnostic state piggybacked on packet 4's mag slot
+void connection_update_sensor_diag(float disAngle, float biasMag, float sphereR);
 void connection_update_sensor_temp(float temp);
 void connection_update_sensor_timeout_time(int64_t timeout);
 void connection_update_battery(bool battery_available, bool plugged, bool charged, uint32_t battery_pptt, int battery_mV);

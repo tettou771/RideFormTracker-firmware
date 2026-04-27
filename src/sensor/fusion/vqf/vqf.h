@@ -49,6 +49,7 @@ void vqf_get_relative_rest_deviations(float *out);
 bool vqf_get_mag_dist_detected(void);
 float vqf_get_mag_ref_norm(void);
 float vqf_get_mag_ref_dip(void);
+float vqf_get_last_mag_dis_angle(void); // heading disagreement (rad, ±π)
 
 extern const sensor_fusion_t sensor_fusion_vqf;
 

@@ -1027,6 +1027,18 @@ void sensor_loop(void)
 				connection_update_sensor_mag(m);
 			}
 
+			// RFT: send diagnostic state in packet 4 (replacing raw mag bytes)
+			// Triggered every loop iteration so values are always fresh in HID
+			if (sensor_fusion == &sensor_fusion_vqf)
+			{
+				float bias[3];
+				rls_sphere_get_bias(&mag_rls, bias);
+				float bias_mag = sqrtf(bias[0]*bias[0] + bias[1]*bias[1] + bias[2]*bias[2]);
+				float sphere_r = rls_sphere_get_radius(&mag_rls);
+				float dis_angle = vqf_get_last_mag_dis_angle();
+				connection_update_sensor_diag(dis_angle, bias_mag, sphere_r);
+			}
+
 			// RFT experiment: log VQF mag state every 2s regardless of whether
 			// mag block ran (upstream memcmp gate skips when data is static)
 			{
