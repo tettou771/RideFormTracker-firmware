@@ -545,8 +545,12 @@ static void set_update_time_ms(int time_ms)
 
 bool main_wfi = false;
 
+// RFT diagnostic: count INT firings
+static volatile uint32_t rft_int_count = 0;
+
 static void sensor_interrupt_handler(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
+	rft_int_count++;
 	// wake up sensor thread
 	if (main_wfi)
 	{
@@ -690,8 +694,8 @@ int sensor_init(void)
 
 	// get mag enable from config
 	mag_enabled = CONFIG_1_SETTINGS_READ(CONFIG_1_SENSOR_USE_MAG);
-	// RFT diagnostic: force-disable mag to test if I2C activity causes glitches
-	mag_enabled = false;
+	// RFT: force-enable mag for the experiment regardless of NVS state
+	mag_enabled = true;
 
 	// setup sensor, set ODR
 	float accel_initial_time = 1.0 / CONFIG_2_SETTINGS_READ(CONFIG_2_SENSOR_ACCEL_ODR);
@@ -1019,26 +1023,34 @@ void sensor_loop(void)
 				if (mag_calibrated && m_valid)
 					sensor_fusion->update_mag(m, mag_actual_time);
 
-				// RFT experiment: log VQF mag state every 2s to characterize environment
+				v_rotate(m, q3, m); // magnetic field in local device frame, no other transformation will be done
+				connection_update_sensor_mag(m);
+			}
+
+			// RFT experiment: log VQF mag state every 2s regardless of whether
+			// mag block ran (upstream memcmp gate skips when data is static)
+			{
 				static int64_t last_mag_log_time = 0;
-				if (sensor_fusion == &sensor_fusion_vqf && k_uptime_get() - last_mag_log_time > 2000)
+				if (k_uptime_get() - last_mag_log_time > 2000)
 				{
 					last_mag_log_time = k_uptime_get();
-					float mag_norm = sqrtf(m[0]*m[0] + m[1]*m[1] + m[2]*m[2]);
+					float mag_norm = sqrtf(last_m[0]*last_m[0] + last_m[1]*last_m[1] + last_m[2]*last_m[2]);
 					float mag_bias[3];
 					rls_sphere_get_bias(&mag_rls, mag_bias);
 					float mag_radius = rls_sphere_get_radius(&mag_rls);
-					LOG_INF("mag: |B|=%.3f dist=%d refNorm=%.3f refDip=%.1fdeg bias=[%.3f %.3f %.3f] r=%.3f",
+					static uint32_t last_int_count = 0;
+					uint32_t int_count = rft_int_count;
+					uint32_t int_per_sec = (int_count - last_int_count) / 2; // fired in last 2s
+					last_int_count = int_count;
+					printk("RFT_MAG: |B|=%.3f dist=%d refNorm=%.3f refDip=%.1fdeg bias=[%.3f %.3f %.3f] r=%.3f int/s=%u total_int=%u thresh=%d\n",
 						(double)mag_norm,
 						vqf_get_mag_dist_detected() ? 1 : 0,
 						(double)vqf_get_mag_ref_norm(),
 						(double)(vqf_get_mag_ref_dip() * 180.0f / M_PI),
 						(double)mag_bias[0], (double)mag_bias[1], (double)mag_bias[2],
-						(double)mag_radius);
+						(double)mag_radius,
+						int_per_sec, int_count, sensor_fifo_threshold);
 				}
-
-				v_rotate(m, q3, m); // magnetic field in local device frame, no other transformation will be done
-				connection_update_sensor_mag(m);
 			}
 
 			// Copy average acceleration for this frame
@@ -1104,7 +1116,8 @@ void sensor_loop(void)
 			}
 
 			// Handle magnetometer calibration
-			if (mag_available && mag_enabled && last_sensor_mode == SENSOR_SENSOR_MODE_LOW_POWER && sensor_mode == SENSOR_SENSOR_MODE_LOW_POWER)
+			// RFT: disable SlimeVR's 6-side auto-cal to avoid competing with RLS sphere fit
+			if (false && mag_available && mag_enabled && last_sensor_mode == SENSOR_SENSOR_MODE_LOW_POWER && sensor_mode == SENSOR_SENSOR_MODE_LOW_POWER)
 				sensor_request_calibration_mag();
 
 #if DEBUG
@@ -1145,7 +1158,7 @@ void sensor_loop(void)
 			k_msleep(sensor_update_time_ms + 10); // will be resumed by interrupt // TODO: dont use hard timeout
 			if (main_wfi) // timeout
 			{
-				LOG_WRN("Sensor interrupt timeout");
+				LOG_DBG("Sensor interrupt timeout"); // RFT: was LOG_WRN, demoted to DBG (floods log)
 				main_wfi = false;
 			}
 		}

@@ -51,6 +51,11 @@ static void set_params()
 	init_params(&params);
 	params.biasClip = 5.0f;
 	params.tauMag = 10.0f; // best result for VQF from paper
+	// RFT: disable VQF's internal mag disturbance rejection because RLS
+	// already handles hard iron, and VQF's strict thresholds prevent
+	// acceptance even with reasonable mag input. tauMag=10s naturally
+	// filters short-term disturbances at the heading correction stage.
+	params.magDistRejectionEnabled = false;
 	// best result from optimizer
 	params.biasForgettingTime = 136.579346;
 	params.biasSigmaInit = 3.219453;
