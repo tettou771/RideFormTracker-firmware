@@ -984,7 +984,7 @@ void sensor_loop(void)
 				// RFT experiment toggle (see MAG_CALIBRATION.md):
 				//   0 = upstream behaviour (skip update_mag when uncalibrated)
 				//   1 = feed mag to VQF always + RLS online hard iron estimation
-				#define RFT_MAG_EXPERIMENT 0
+				#define RFT_MAG_EXPERIMENT 1
 
 				bool mag_calibrated = true;
 				memcpy(last_m, raw_m, sizeof(last_m)); // copy raw magnetometer data
@@ -997,11 +997,9 @@ void sensor_loop(void)
 
 #if RFT_MAG_EXPERIMENT
 					// RFT experiment: online hard iron estimation via RLS sphere fit
-					// Only update when there's meaningful motion (>5 deg/s) to avoid P blowup
-					const float gyro_motion_threshold_sq = 5.0f * 5.0f; // (deg/s)^2
-					if (max_gyro_speed_square > gyro_motion_threshold_sq) {
-						rls_sphere_update(&mag_rls, raw_m);
-					}
+					// memcmp guard above already ensures we only run on new mag samples,
+					// which inherently filters out static periods (no orientation change)
+					rls_sphere_update(&mag_rls, raw_m);
 					float mag_bias[3];
 					rls_sphere_get_bias(&mag_rls, mag_bias);
 					raw_m[0] -= mag_bias[0];
