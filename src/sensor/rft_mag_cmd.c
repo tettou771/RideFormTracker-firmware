@@ -64,10 +64,6 @@ static void rft_mag_cmd_work_handler(struct k_work *work)
 		printk("RFT_CMD: RX MAG_RECAL\n");
 		rft_mag_cal_reset();
 		break;
-	case RFT_CMD_STREAM_RAW_MAG:
-		rft_mag_stream_enabled = (buf[0] != 0);
-		printk("RFT_CMD: RX STREAM_RAW_MAG=%d\n", (int)rft_mag_stream_enabled);
-		break;
 	default:
 		printk("RFT_CMD: unknown type %u\n", type);
 		break;
@@ -76,38 +72,49 @@ static void rft_mag_cmd_work_handler(struct k_work *work)
 
 void rft_mag_cmd_handle_rx(const uint8_t slot[10], uint8_t my_tracker_id)
 {
-	// Diagnostic: count every sync RX so we can confirm the path is alive
-	// even when no command targets us. Prints once a second.
+	/* Verify XOR checksum first. If it mismatches we can't trust any of
+	 * the bytes, including the flag byte. */
+	uint8_t xor = 0;
+	for (int i = 0; i < 9; i++) xor ^= slot[i];
+	if (xor != slot[9]) {
+		/* Quiet — not LOG_WRN — bad packets are normal during pairing
+		 * churn and would otherwise spam the console. */
+		return;
+	}
+
+	/* (1) Global flags — applied to every tracker on every sync. */
+	uint8_t flags = slot[0];
+	bool want_stream = (flags & RFT_FLAG_STREAM_RAW_MAG) != 0;
+	if (want_stream != rft_mag_stream_enabled) {
+		rft_mag_stream_enabled = want_stream;
+		printk("RFT_FLAG: STREAM_RAW_MAG=%d\n", (int)want_stream);
+	}
+
+	/* (2) Diagnostic: count every sync RX so we can confirm the path is alive
+	 * even when no command targets us. Prints once a second. */
 	static volatile uint32_t sync_rx_count = 0;
 	static int64_t last_log_ms = 0;
 	sync_rx_count++;
 	int64_t now_ms = k_uptime_get();
 	if (now_ms - last_log_ms > 1000) {
 		last_log_ms = now_ms;
-		printk("RFT_CMD: sync_rx/s=%u target=%u (me=%u) type=%u\n",
-		       sync_rx_count, slot[0], my_tracker_id, slot[1]);
+		printk("RFT_CMD: sync_rx/s=%u flags=0x%02x target=%u (me=%u) type=%u\n",
+		       sync_rx_count, slot[0], slot[1], my_tracker_id, slot[2]);
 		sync_rx_count = 0;
 	}
 
-	uint8_t target = slot[0];
+	/* (3) Targeted command. */
+	uint8_t target = slot[1];
 	if (target == RFT_CMD_NO_TARGET || target != my_tracker_id) return;
 
-	uint8_t type = slot[1];
+	uint8_t type = slot[2];
 	if (type == RFT_CMD_NONE) return;
-
-	/* Verify XOR checksum: bytes [0..8] XOR == byte [9] */
-	uint8_t xor = 0;
-	for (int i = 0; i < 9; i++) xor ^= slot[i];
-	if (xor != slot[9]) {
-		LOG_WRN("cmd checksum mismatch");
-		return;
-	}
 
 	/* Capture and defer to work queue (ISR-safe). If a previous command is
 	 * still pending and unexecuted, drop the new one rather than racing. */
 	if (pending.valid) return;
 	pending.type = type;
-	memcpy(pending.data, &slot[2], 6);
+	memcpy(pending.data, &slot[3], 6);
 	pending.valid = true;
 	k_work_submit(&rft_mag_cmd_work);
 }

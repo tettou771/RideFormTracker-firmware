@@ -516,6 +516,7 @@ static int64_t last_status2_time = 0;
 void connection_thread(void)
 {
 	uint8_t data_copy[21];
+	bool pkt8_pending = false;
 	// TODO: checking for connection_update events from sensor_loop, here we will time and send them out
 	while (1)
 	{
@@ -541,11 +542,21 @@ void connection_thread(void)
 			last_mag_time = k_uptime_get();
 			connection_write_packet_4();
 			// Packet 8 (raw mag + bias) only when PC has requested the stream.
-			// Same mag tick so its rate matches real mag samples.
+			// We can't write pkt8 in the same iteration because it shares
+			// data_buffer with pkt4 — pkt8 would overwrite pkt4 before the
+			// ESB drain on the next loop iter, starving the receiver of
+			// d/quat updates. Defer to the next iteration so pkt4 drains
+			// first, then pkt8 fills data_buffer for the iter after that.
 			extern volatile bool rft_mag_stream_enabled;
 			if (rft_mag_stream_enabled) {
-				connection_write_packet_8();
+				pkt8_pending = true;
 			}
+			continue;
+		}
+		else if (pkt8_pending)
+		{
+			pkt8_pending = false;
+			connection_write_packet_8();
 			continue;
 		}
 		// if time for info and precise quat not needed
