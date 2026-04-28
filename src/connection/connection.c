@@ -138,6 +138,23 @@ void connection_update_sensor_diag(float disAngle, float biasMag, float sphereR)
 	(void)sphereR;   /* PC computes sphere fit, no longer transmitted */
 }
 
+// RFT diag packet 9: vectors that go into VQF's heading disagreement
+// computation. Lets the host visualise mag in both device and earth frame
+// (post-VQF-rotation) to localize coord/handedness issues.
+//   d == atan2(magEarth.x, magEarth.y) - delta
+static float sensor_mag_device[3] = {0, 0, 0};  // post-alignment, pre-VQF
+static float sensor_mag_earth[3]  = {0, 0, 0};  // gravity-aligned by gyro+accel quat
+static float sensor_vqf_delta     = 0.0f;       // VQF heading correction (rad)
+
+void connection_update_sensor_mag_diag(const float m_device[3],
+                                       const float m_earth[3],
+                                       float delta)
+{
+	memcpy(sensor_mag_device, m_device, sizeof(sensor_mag_device));
+	memcpy(sensor_mag_earth,  m_earth,  sizeof(sensor_mag_earth));
+	sensor_vqf_delta = delta;
+}
+
 void connection_update_sensor_temp(float temp)
 {
 	// sensor_temp == zero means no data
@@ -379,6 +396,31 @@ void connection_write_packet_4() // RFT: full precision quat + d (real-time)
 // PC requests via STREAM_RAW_MAG=on (e.g., user pressed Reset to recalibrate).
 // Layout: [0]=8, [1]=id, [2..7]=raw mag (3×Q11), [8..13]=bias (3×Q11),
 // [14]=cal_done (0/1), [15]=reserved.
+void connection_write_packet_9()
+{
+	// Layout: [2..7]=mag_device (Q11), [8..13]=magEarth (Q11), [14..15]=delta(Q11)
+	uint8_t data[16] = {0};
+	data[0] = 9;
+	data[1] = tracker_id;
+	uint16_t *buf = (uint16_t *)&data[2];
+	buf[0] = TO_FIXED_11(sensor_mag_device[0]);
+	buf[1] = TO_FIXED_11(sensor_mag_device[1]);
+	buf[2] = TO_FIXED_11(sensor_mag_device[2]);
+	buf[3] = TO_FIXED_11(sensor_mag_earth[0]);
+	buf[4] = TO_FIXED_11(sensor_mag_earth[1]);
+	buf[5] = TO_FIXED_11(sensor_mag_earth[2]);
+	buf[6] = TO_FIXED_11(sensor_vqf_delta);
+	int ret = k_mutex_lock(&data_buffer_mutex, K_MSEC(100));
+	if (ret) {
+		LOG_ERR("Failed mutex lock");
+		return;
+	}
+	memcpy(data_buffer, data, sizeof(data));
+	last_data_time = k_uptime_get();
+	k_mutex_unlock(&data_buffer_mutex);
+	hid_write_packet_n(data);
+}
+
 void connection_write_packet_8()
 {
 	uint8_t data[16] = {0};
@@ -517,6 +559,7 @@ void connection_thread(void)
 {
 	uint8_t data_copy[21];
 	bool pkt8_pending = false;
+	bool pkt9_pending = false;
 	// TODO: checking for connection_update events from sensor_loop, here we will time and send them out
 	while (1)
 	{
@@ -557,6 +600,16 @@ void connection_thread(void)
 		{
 			pkt8_pending = false;
 			connection_write_packet_8();
+			extern volatile bool rft_mag_stream_enabled;
+			if (rft_mag_stream_enabled) {
+				pkt9_pending = true;
+			}
+			continue;
+		}
+		else if (pkt9_pending)
+		{
+			pkt9_pending = false;
+			connection_write_packet_9();
 			continue;
 		}
 		// if time for info and precise quat not needed

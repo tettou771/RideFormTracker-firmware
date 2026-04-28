@@ -42,6 +42,15 @@ void connection_update_sensor_raw_mag(const float m[3]);
 // RFT: tracker-side bias + cal-done flag, sent alongside raw_mag in packet 8.
 void connection_update_sensor_mag_bias(const float bias[3], bool cal_done);
 
+// RFT diag: vectors that go into VQF's heading disagreement calculation.
+//   m_device = post-alignment mag (input to VQF, in device body frame)
+//   m_earth  = mag rotated into earth frame by gyro+accel-only quat
+//   delta    = VQF heading correction (rad)
+//   d == atan2(m_earth.x, m_earth.y) - delta
+void connection_update_sensor_mag_diag(const float m_device[3],
+                                       const float m_earth[3],
+                                       float delta);
+
 // VQF heading disturbance angle (rad, ±π). Sent in packet 4 every frame.
 // (biasMag and sphereR args are ignored — they used to share this slot but
 // are now PC-side computations.)
@@ -61,5 +70,6 @@ void connection_write_packet_3(void);
 void connection_write_packet_4(void);
 void connection_write_packet_5(void);
 void connection_write_packet_8(void);  // raw mag + bias (on-demand stream)
+void connection_write_packet_9(void);  // RFT diag: mag_device + magEarth + delta
 
 #endif

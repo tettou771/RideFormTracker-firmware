@@ -193,6 +193,23 @@ float vqf_get_last_mag_dis_angle(void)
 	return state.lastMagDisAngle;
 }
 
+// RFT diag: earth-frame mag vector that VQF used to compute the disagreement
+// angle on the last updateMag. Lets the host visualise what mag actually
+// looks like *after* gravity-alignment by gyro+accel orientation.
+void vqf_get_last_mag_earth(float out[3])
+{
+	out[0] = state.lastMagEarth[0];
+	out[1] = state.lastMagEarth[1];
+	out[2] = state.lastMagEarth[2];
+}
+
+// RFT diag: gyro/accel-derived heading correction (rad). Combined with
+// magEarth: d == atan2(magEarth.x, magEarth.y) - delta (matches vqf.c).
+float vqf_get_delta(void)
+{
+	return getDelta(&state);
+}
+
 const sensor_fusion_t sensor_fusion_vqf = {
 	*vqf_init,
 	*vqf_load,

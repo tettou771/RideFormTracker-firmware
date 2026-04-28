@@ -1211,6 +1211,13 @@ void sensor_loop(void)
 				float mb[3];
 				rls_sphere_get_bias(&mag_rls, mb);
 				connection_update_sensor_mag_bias(mb, rft_mag_cal_done);
+				// Packet 9 (when streaming): mag in device + earth frame +
+				// VQF heading correction. Lets host visualize what VQF
+				// is actually disagreeing about — the constituents of d.
+				float magEarth[3];
+				vqf_get_last_mag_earth(magEarth);
+				float delta = vqf_get_delta();
+				connection_update_sensor_mag_diag(rft_last_m_to_vqf, magEarth, delta);
 			}
 
 			// RFT experiment: log VQF mag state every 2s regardless of whether

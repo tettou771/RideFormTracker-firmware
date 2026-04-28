@@ -50,6 +50,8 @@ bool vqf_get_mag_dist_detected(void);
 float vqf_get_mag_ref_norm(void);
 float vqf_get_mag_ref_dip(void);
 float vqf_get_last_mag_dis_angle(void); // heading disagreement (rad, ±π)
+void  vqf_get_last_mag_earth(float out[3]); // mag in earth frame (RFT diag)
+float vqf_get_delta(void); // gyro+accel heading correction (rad, ±π)
 
 extern const sensor_fusion_t sensor_fusion_vqf;
 
