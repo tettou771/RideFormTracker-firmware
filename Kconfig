@@ -236,16 +236,18 @@ config SENSOR_GYRO_ODR
 
 config SENSOR_ACCEL_FS
     int "Accelerometer full scale (g)"
-    default 4
+    default 16
     help
         Requested accelerometer full scale. Actual scale will be raised to the nearest supported scale.
+        RFT default 16g — bike use sees high jolt events; quantization is fine for VQF gravity tracking.
         A lower scale may improve noise performance, but is more likely to saturate.
 
 config SENSOR_GYRO_FS
     int "Gyrometer full scale (dps)"
-    default 1000
+    default 4000
     help
         Requested gyrometer full scale. Actual scale will be raised to the nearest supported scale.
+        RFT default 4000dps — wrist snaps can exceed 2000dps, saturation causes orientation flips.
         A lower scale may improve noise performance, but is more likely to saturate.
 
 config SENSOR_USE_MAG

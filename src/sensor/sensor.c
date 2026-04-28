@@ -57,6 +57,7 @@ static float    rft_prev_bias_check[3] = {0};
 int      rft_stable_check_count = 0;            // consecutive stable 1s checks
 bool     rft_mag_cal_done = false;
 int      rft_mag_cal_progress = 0;              // 0-100 (sent over HID)
+bool     rft_mag_in_motion = false;             // gates calibration tracking
 
 void rft_mag_cal_reset(void)
 {
@@ -757,7 +758,10 @@ int sensor_init(void)
 
 		// RFT experiment: initialize online hard iron estimator
 		// lambda=0.9999 (~10k sample effective window), P0=1e3 (weak prior)
-		rls_sphere_init(&mag_rls, 0.9999f, 1000.0f);
+		// Fixed-radius sphere fit: known geomagnetic norm in Tokyo ~0.45G,
+		// learning rate 0.02. With 3 unknowns (vs 4-DOF RLS) the fit can't
+		// settle on a tiny "false" sphere centered on a static pose.
+		rls_sphere_init(&mag_rls, 0.45f, 0.02f);
 	}
 	LOG_INF("Initialized sensors");
 
@@ -1030,10 +1034,24 @@ void sensor_loop(void)
 					mag_calibrated = false;
 
 #if RFT_MAG_EXPERIMENT
-					// RFT experiment: online hard iron estimation via RLS sphere fit
-					// memcmp guard above already ensures we only run on new mag samples,
-					// which inherently filters out static periods (no orientation change)
-					rls_sphere_update(&mag_rls, raw_m);
+					// RFT experiment: online hard iron estimation via RLS sphere fit.
+					// Only update during real motion so the sphere fit doesn't drift
+					// toward the resting cluster (which would falsely declare a
+					// well-fitted small sphere centered on whatever pose the user
+					// happens to leave the tracker in).
+					static float rft_last_motion_raw[3] = {0, 0, 0};
+					float drm0 = raw_m[0] - rft_last_motion_raw[0];
+					float drm1 = raw_m[1] - rft_last_motion_raw[1];
+					float drm2 = raw_m[2] - rft_last_motion_raw[2];
+					float drm = sqrtf(drm0*drm0 + drm1*drm1 + drm2*drm2);
+					extern bool rft_mag_in_motion;
+					rft_mag_in_motion = (drm > 0.02f); // 0.02 G delta = real motion
+					if (rft_mag_in_motion) {
+						memcpy(rft_last_motion_raw, raw_m, sizeof(rft_last_motion_raw));
+						if (!rft_mag_cal_done) {
+							rls_sphere_update(&mag_rls, raw_m);
+						}
+					}
 					float mag_bias[3];
 					rls_sphere_get_bias(&mag_rls, mag_bias);
 					raw_m[0] -= mag_bias[0];
@@ -1064,8 +1082,9 @@ void sensor_loop(void)
 				bool m_valid = isfinite(m[0]) && isfinite(m[1]) && isfinite(m[2])
 					&& fabsf(m[0]) < 10.0f && fabsf(m[1]) < 10.0f && fabsf(m[2]) < 10.0f;
 
-				// RFT calibration progress tracking
-				if (m_valid)
+				// RFT calibration progress tracking — only when actually moving
+				// (rft_mag_in_motion was set above in the RLS update path)
+				if (m_valid && rft_mag_in_motion)
 				{
 					// Coverage: which of 8 octants does the corrected mag direction visit?
 					int oct = 0;
@@ -1074,8 +1093,8 @@ void sensor_loop(void)
 					if (m[2] > 0) oct |= 4;
 					rft_octants_visited |= (1 << oct);
 
-					// Stability: bias change over 1s windows. After 3 consecutive stable
-					// windows + sufficient coverage, declare calibration done.
+					// Stability: bias change over 1s windows OF MOTION. After 3 consecutive
+					// motion-windows where bias barely moved, declare calibration done.
 					int64_t now = k_uptime_get();
 					if (now - rft_last_bias_check_time > 1000)
 					{
@@ -1092,7 +1111,6 @@ void sensor_loop(void)
 						rft_last_bias_check_time = now;
 					}
 
-					// Coverage = popcount/8 (need 6+ of 8 octants)
 					int oct_count = __builtin_popcount(rft_octants_visited);
 					int coverage_pct = (oct_count * 100) / 8;
 					int stability_pct = (rft_stable_check_count >= 3) ? 100 : (rft_stable_check_count * 33);
