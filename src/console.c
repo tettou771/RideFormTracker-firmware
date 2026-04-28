@@ -642,6 +642,12 @@ static void console_thread(void)
 			sensor_calibration_clear_mag(NULL, true);
 		}
 #endif
+		else if (strcmp(argv[0], "mag_recal") == 0)
+		{
+			extern void rft_mag_cal_reset(void);
+			rft_mag_cal_reset();
+			printk("mag calibration state reset — shake the tracker to recalibrate\n");
+		}
 		else if (strcmp(argv[0], command_mag_axes) == 0)
 		{
 			extern int rft_mag_axes_mode;

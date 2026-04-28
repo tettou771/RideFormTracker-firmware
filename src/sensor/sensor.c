@@ -42,6 +42,32 @@ static rls_sphere_t mag_rls;
 // 0 = compile-time SENSOR_MAGNETOMETER_AXES_ALIGNMENT, 1-7 = predefined alternatives.
 int rft_mag_axes_mode = 0;
 
+// RFT diagnostic: capture last m[] vector that was fed to VQF (post-alignment,
+// post-RLS-bias-subtraction). Used by the 2s log to check if the corrected mag
+// actually rotates with physical motion or stays anchored to PCB.
+float rft_last_m_to_vqf[3] = {0};
+
+// RFT calibration tracking: gate VQF mag updates on a coverage + stability
+// criterion (the SlimeVR original behaviour, but with online RLS instead of
+// the 6-side ritual). Without this, partial RLS convergence feeds garbage
+// to VQF and confuses heading estimation.
+uint8_t  rft_octants_visited = 0;              // bitmap of 8 octants seen
+static int64_t  rft_last_bias_check_time = 0;
+static float    rft_prev_bias_check[3] = {0};
+int      rft_stable_check_count = 0;            // consecutive stable 1s checks
+bool     rft_mag_cal_done = false;
+int      rft_mag_cal_progress = 0;              // 0-100 (sent over HID)
+
+void rft_mag_cal_reset(void)
+{
+	rft_octants_visited = 0;
+	rft_stable_check_count = 0;
+	rft_mag_cal_done = false;
+	rft_mag_cal_progress = 0;
+	rft_last_bias_check_time = 0;
+	memset(rft_prev_bias_check, 0, sizeof(rft_prev_bias_check));
+}
+
 #define SPI_OP SPI_MODE_CPOL | SPI_MODE_CPHA | SPI_WORD_SET(8)
 
 #if DT_NODE_HAS_STATUS(DT_NODELABEL(imu_spi), okay)
@@ -1037,8 +1063,59 @@ void sensor_loop(void)
 				// Process fusion (with safety check: skip if non-finite or out of range)
 				bool m_valid = isfinite(m[0]) && isfinite(m[1]) && isfinite(m[2])
 					&& fabsf(m[0]) < 10.0f && fabsf(m[1]) < 10.0f && fabsf(m[2]) < 10.0f;
-				if (mag_calibrated && m_valid)
+
+				// RFT calibration progress tracking
+				if (m_valid)
+				{
+					// Coverage: which of 8 octants does the corrected mag direction visit?
+					int oct = 0;
+					if (m[0] > 0) oct |= 1;
+					if (m[1] > 0) oct |= 2;
+					if (m[2] > 0) oct |= 4;
+					rft_octants_visited |= (1 << oct);
+
+					// Stability: bias change over 1s windows. After 3 consecutive stable
+					// windows + sufficient coverage, declare calibration done.
+					int64_t now = k_uptime_get();
+					if (now - rft_last_bias_check_time > 1000)
+					{
+						float mb[3];
+						rls_sphere_get_bias(&mag_rls, mb);
+						float dx = mb[0] - rft_prev_bias_check[0];
+						float dy = mb[1] - rft_prev_bias_check[1];
+						float dz = mb[2] - rft_prev_bias_check[2];
+						float change = sqrtf(dx*dx + dy*dy + dz*dz);
+						const float STABILITY_THRESHOLD = 0.005f; // 5 mG drift per second
+						if (change < STABILITY_THRESHOLD) rft_stable_check_count++;
+						else rft_stable_check_count = 0;
+						memcpy(rft_prev_bias_check, mb, sizeof(mb));
+						rft_last_bias_check_time = now;
+					}
+
+					// Coverage = popcount/8 (need 6+ of 8 octants)
+					int oct_count = __builtin_popcount(rft_octants_visited);
+					int coverage_pct = (oct_count * 100) / 8;
+					int stability_pct = (rft_stable_check_count >= 3) ? 100 : (rft_stable_check_count * 33);
+					rft_mag_cal_progress = (coverage_pct + stability_pct) / 2;
+
+					if (!rft_mag_cal_done && oct_count >= 6 && rft_stable_check_count >= 3)
+					{
+						rft_mag_cal_done = true;
+						printk("RFT_MAG: calibration DONE (octants=%d, stable=%d)\n",
+							oct_count, rft_stable_check_count);
+					}
+				}
+
+				// Only feed VQF once calibration is complete
+				if (mag_calibrated && m_valid && rft_mag_cal_done)
 					sensor_fusion->update_mag(m, mag_actual_time);
+
+				// RFT diagnostic: capture the mag vector that was fed to VQF so we
+				// can log it (and verify whether it actually rotates with physical
+				// motion, or stays anchored to PCB due to over-aggressive RLS bias)
+				rft_last_m_to_vqf[0] = m[0];
+				rft_last_m_to_vqf[1] = m[1];
+				rft_last_m_to_vqf[2] = m[2];
 
 				v_rotate(m, q3, m); // magnetic field in local device frame, no other transformation will be done
 				connection_update_sensor_mag(m);
@@ -1048,12 +1125,11 @@ void sensor_loop(void)
 			// Triggered every loop iteration so values are always fresh in HID
 			if (sensor_fusion == &sensor_fusion_vqf)
 			{
-				float bias[3];
-				rls_sphere_get_bias(&mag_rls, bias);
-				float bias_mag = sqrtf(bias[0]*bias[0] + bias[1]*bias[1] + bias[2]*bias[2]);
 				float sphere_r = rls_sphere_get_radius(&mag_rls);
 				float dis_angle = vqf_get_last_mag_dis_angle();
-				connection_update_sensor_diag(dis_angle, bias_mag, sphere_r);
+				// cal_progress (0-1) sent in the bias-magnitude slot
+				float cal_progress_g = rft_mag_cal_progress / 100.0f;
+				connection_update_sensor_diag(dis_angle, cal_progress_g, sphere_r);
 			}
 
 			// RFT experiment: log VQF mag state every 2s regardless of whether
@@ -1071,14 +1147,17 @@ void sensor_loop(void)
 					uint32_t int_count = rft_int_count;
 					uint32_t int_per_sec = (int_count - last_int_count) / 2; // fired in last 2s
 					last_int_count = int_count;
-					printk("RFT_MAG: |B|=%.3f dist=%d refNorm=%.3f refDip=%.1fdeg bias=[%.3f %.3f %.3f] r=%.3f int/s=%u total_int=%u thresh=%d\n",
+					float m_norm = sqrtf(rft_last_m_to_vqf[0]*rft_last_m_to_vqf[0]
+						+ rft_last_m_to_vqf[1]*rft_last_m_to_vqf[1]
+						+ rft_last_m_to_vqf[2]*rft_last_m_to_vqf[2]);
+					printk("RFT_MAG: raw|B|=%.3f bias=[%.3f %.3f %.3f] r=%.3f m_to_vqf=[%.3f %.3f %.3f] |m|=%.3f dist=%d axesMode=%d\n",
 						(double)mag_norm,
-						vqf_get_mag_dist_detected() ? 1 : 0,
-						(double)vqf_get_mag_ref_norm(),
-						(double)(vqf_get_mag_ref_dip() * 180.0f / M_PI),
 						(double)mag_bias[0], (double)mag_bias[1], (double)mag_bias[2],
 						(double)mag_radius,
-						int_per_sec, int_count, sensor_fifo_threshold);
+						(double)rft_last_m_to_vqf[0], (double)rft_last_m_to_vqf[1], (double)rft_last_m_to_vqf[2],
+						(double)m_norm,
+						vqf_get_mag_dist_detected() ? 1 : 0,
+						rft_mag_axes_mode);
 				}
 			}
 
