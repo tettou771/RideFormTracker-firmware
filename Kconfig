@@ -143,9 +143,13 @@ menu "Sensor power saving"
 
 config SENSOR_LP_TIMEOUT
     int "Sensor low power delay (ms)"
-    default 500
+    default 600000
     help
-        Low power timeout during no motion.
+        Low power timeout during no motion. RFT default 10 min — keeps the
+        sensor in LOW_NOISE (167 Hz loop) so quick snap motions don't get
+        absorbed by a sleeping FIFO. The intermediate LOW_POWER state is
+        rarely useful for active tracking; we go LOW_NOISE → WOM
+        (also 10 min) directly.
 
 config SENSOR_USE_LOW_POWER_2
     bool "Use additional low power modes"

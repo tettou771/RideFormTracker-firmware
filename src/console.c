@@ -648,6 +648,18 @@ static void console_thread(void)
 			rft_mag_cal_reset();
 			printk("mag calibration state reset — shake the tracker to recalibrate\n");
 		}
+		else if (strcmp(argv[0], "mag_off") == 0)
+		{
+			extern bool mag_enabled;
+			mag_enabled = false;
+			printk("mag fully disabled (no I2C reads, no VQF feed) — pure 6DoF\n");
+		}
+		else if (strcmp(argv[0], "mag_on") == 0)
+		{
+			extern bool mag_enabled;
+			mag_enabled = true;
+			printk("mag re-enabled\n");
+		}
 		else if (strcmp(argv[0], command_mag_axes) == 0)
 		{
 			extern int rft_mag_axes_mode;

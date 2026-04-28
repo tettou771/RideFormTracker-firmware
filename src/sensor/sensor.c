@@ -140,7 +140,7 @@ static bool sensor_sensor_scanning;
 static bool main_suspended;
 
 static bool mag_available;
-static bool mag_enabled; // TODO: toggle from server
+bool mag_enabled; // not static so console can toggle (see `mag_off`/`mag_on`)
 
 static int fusion_id = 0;
 static const sensor_fusion_t *sensor_fusion = &sensor_fusion_none;
@@ -1143,20 +1143,21 @@ void sensor_loop(void)
 					float mag_bias[3];
 					rls_sphere_get_bias(&mag_rls, mag_bias);
 					float mag_radius = rls_sphere_get_radius(&mag_rls);
-					static uint32_t last_int_count = 0;
-					uint32_t int_count = rft_int_count;
-					uint32_t int_per_sec = (int_count - last_int_count) / 2; // fired in last 2s
-					last_int_count = int_count;
 					float m_norm = sqrtf(rft_last_m_to_vqf[0]*rft_last_m_to_vqf[0]
 						+ rft_last_m_to_vqf[1]*rft_last_m_to_vqf[1]
 						+ rft_last_m_to_vqf[2]*rft_last_m_to_vqf[2]);
-					printk("RFT_MAG: raw|B|=%.3f bias=[%.3f %.3f %.3f] r=%.3f m_to_vqf=[%.3f %.3f %.3f] |m|=%.3f dist=%d axesMode=%d\n",
+					static uint32_t last_int_count = 0;
+					uint32_t int_count = rft_int_count;
+					uint32_t int_per_sec = (int_count - last_int_count) / 2;
+					last_int_count = int_count;
+					printk("RFT_MAG: raw|B|=%.3f r=%.3f m=[%.2f %.2f %.2f] |m|=%.2f cal=%d%% calDone=%d int/s=%u mode=%d\n",
 						(double)mag_norm,
-						(double)mag_bias[0], (double)mag_bias[1], (double)mag_bias[2],
 						(double)mag_radius,
 						(double)rft_last_m_to_vqf[0], (double)rft_last_m_to_vqf[1], (double)rft_last_m_to_vqf[2],
 						(double)m_norm,
-						vqf_get_mag_dist_detected() ? 1 : 0,
+						rft_mag_cal_progress,
+						rft_mag_cal_done ? 1 : 0,
+						int_per_sec,
 						rft_mag_axes_mode);
 				}
 			}
