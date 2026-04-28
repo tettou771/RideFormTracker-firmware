@@ -120,25 +120,23 @@ void event_handler(struct esb_evt const *event)
 			}
 			else
 			{
-				if (rx_payload.length == 4)
+				/* RFT-extended sync packet: 12 bytes. Bytes [0..1] are LED
+				 * clock; [2..11] is an optional command slot dispatched to
+				 * the mag-cal handler. Old upstream length-4 sync also tolerated
+				 * (LED clock only). */
+				if (rx_payload.length == 12 || rx_payload.length == 4)
 				{
-					// TODO: Device should never receive packets if it is already paired, why is this packet received?
-					// This may be part of acknowledge
-//					if (!nrfx_timer_init_check(&m_timer))
-					{
-						LOG_WRN("Timer not initialized");
-						break;
-					}
-					if (timer_state == false)
-					{
-//						nrfx_timer_resume(&m_timer);
-						timer_state = true;
-					}
-//					nrfx_timer_clear(&m_timer);
+					timer_state = true;
 					last_reset = 0;
-					led_clock = (rx_payload.data[0] << 8) + rx_payload.data[1]; // sync led flashes :)
+					led_clock = (rx_payload.data[0] << 8) + rx_payload.data[1];
 					led_clock_offset = 0;
-					LOG_DBG("RX, timer reset");
+					LOG_DBG("RX sync, len=%d", rx_payload.length);
+
+					if (rx_payload.length == 12) {
+						extern void rft_mag_cmd_handle_rx(const uint8_t slot[10],
+							uint8_t my_tracker_id);
+						rft_mag_cmd_handle_rx(&rx_payload.data[2], paired_addr[1]);
+					}
 				}
 			}
 		}

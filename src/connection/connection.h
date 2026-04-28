@@ -35,7 +35,11 @@ void connection_update_sensor_ids(int imu_id, int mag_id);
 void connection_update_sensor_data(float *q, float *a, int64_t data_time); // ticks
 void connection_update_sensor_mag(float *m);
 
-// RFT: diagnostic state piggybacked on packet 4's mag slot
+// RFT: raw (uncorrected) mag for PC-side calibration. Sent in packet 4.
+void connection_update_sensor_raw_mag(const float m[3]);
+
+// Legacy stub kept for source compat — diag is no longer transmitted (PC
+// computes from raw mag + quat).
 void connection_update_sensor_diag(float disAngle, float biasMag, float sphereR);
 void connection_update_sensor_temp(float temp);
 void connection_update_sensor_timeout_time(int64_t timeout);

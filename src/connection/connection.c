@@ -110,18 +110,22 @@ void connection_update_sensor_mag(float *m)
 	mag_update_time = k_uptime_get();
 }
 
-// RFT diagnostics piggybacked on packet 4's mag slot (see MAG_CALIBRATION.md).
-// Receiver/Deck repurpose these 6 bytes for VQF disturbance + RLS state since
-// raw mag is not used in the RFT pipeline.
-static float sensor_diag_dis_angle = 0.0f; // VQF heading disagreement (rad, ±π)
-static float sensor_diag_bias_mag = 0.0f;  // RLS estimated hard iron magnitude (G)
-static float sensor_diag_sphere_r = 0.0f;  // RLS sphere radius / expected |B| (G)
+// RFT: raw (uncorrected) magnetometer captured in sensor.c, sent in packet 4.
+// PC-side does sphere fit, so we ship the raw m here. Bias is applied on the
+// tracker BEFORE feeding VQF, but the wire format here is uncorrected so the
+// PC can run its own calibration without re-doing what the tracker did.
+static float sensor_raw_mag[3] = {0, 0, 0};
 
+void connection_update_sensor_raw_mag(const float m[3])
+{
+	memcpy(sensor_raw_mag, m, sizeof(sensor_raw_mag));
+}
+
+/* Legacy stub: keeps existing call sites in sensor.c compiling. The diag
+ * values are no longer transmitted — d is computed on PC from raw mag+quat. */
 void connection_update_sensor_diag(float disAngle, float biasMag, float sphereR)
 {
-	sensor_diag_dis_angle = disAngle;
-	sensor_diag_bias_mag = biasMag;
-	sensor_diag_sphere_r = sphereR;
+	(void)disAngle; (void)biasMag; (void)sphereR;
 }
 
 void connection_update_sensor_temp(float temp)
@@ -334,7 +338,7 @@ void connection_write_packet_3() // status
 	hid_write_packet_n(data); // TODO:
 }
 
-void connection_write_packet_4() // RFT: full precision quat + diag (was mag)
+void connection_write_packet_4() // RFT: full precision quat + raw mag for PC-side cal
 {
 	uint8_t data[16] = {0};
 	data[0] = 4; // packet 4
@@ -344,10 +348,11 @@ void connection_write_packet_4() // RFT: full precision quat + diag (was mag)
 	buf[1] = TO_FIXED_15(sensor_q[2]);
 	buf[2] = TO_FIXED_15(sensor_q[3]);
 	buf[3] = TO_FIXED_15(sensor_q[0]);
-	// RFT: 6 mag bytes repurposed for diagnostic state
-	buf[4] = TO_FIXED_11(sensor_diag_dis_angle); // ±16 rad range, ~0.028° precision
-	buf[5] = TO_FIXED_10(sensor_diag_bias_mag);  // ±32G range
-	buf[6] = TO_FIXED_10(sensor_diag_sphere_r);  // ±32G range
+	// 6 mag bytes: 3 × int16 Q11 raw (uncorrected) magnetic field in Gauss.
+	// Range ±16G covers the worst-case hard iron + geomag (typically <2G).
+	buf[4] = TO_FIXED_11(sensor_raw_mag[0]);
+	buf[5] = TO_FIXED_11(sensor_raw_mag[1]);
+	buf[6] = TO_FIXED_11(sensor_raw_mag[2]);
 	int ret = k_mutex_lock(&data_buffer_mutex, K_MSEC(100));
 	if (ret) {
 		LOG_ERR("Failed mutex lock");

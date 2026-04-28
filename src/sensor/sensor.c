@@ -1069,6 +1069,10 @@ void sensor_loop(void)
 
 				bool mag_calibrated = true;
 				memcpy(last_m, raw_m, sizeof(last_m)); // copy raw magnetometer data
+				// PC-side cal sees the truly raw I2C-read mag (pre-alignment,
+				// pre-bias-subtraction). Computes its own sphere fit and ships
+				// the bias back via ESB.
+				connection_update_sensor_raw_mag(raw_m);
 				sensor_calibration_process_mag(raw_m);
 				float zero_m[3] = {0};
 				if (v_epsilon(raw_m, zero_m, 1e-6)) // if the magnetometer is not calibrated
