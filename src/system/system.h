@@ -10,6 +10,7 @@
 #define MAIN_ACCEL_BIAS_ID 3
 #define MAIN_GYRO_BIAS_ID 4
 #define MAIN_MAG_BIAS_ID 5
+#define RFT_MAG_BIAS_ID 6  // RFT online mag bias (3 floats)
 #define MAIN_ACC_6_BIAS_ID 7
 
 #define BATT_STATS_LAST_RUN_ID 8

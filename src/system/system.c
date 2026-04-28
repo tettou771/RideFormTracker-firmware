@@ -177,6 +177,7 @@ static int sys_retained_init(void)
 		sys_read(MAIN_ACCEL_BIAS_ID, &retained->accelBias, sizeof(retained->accelBias));
 		sys_read(MAIN_GYRO_BIAS_ID, &retained->gyroBias, sizeof(retained->gyroBias));
 		sys_read(MAIN_MAG_BIAS_ID, &retained->magBAinv, sizeof(retained->magBAinv));
+		sys_read(RFT_MAG_BIAS_ID, &retained->magBias, sizeof(retained->magBias));
 		sys_read(MAIN_ACC_6_BIAS_ID, &retained->accBAinv, sizeof(retained->accBAinv));
 		sys_read(BATT_STATS_CURVE_ID, &retained->battery_pptt_curve, sizeof(retained->battery_pptt_curve));
 		sys_read(SETTINGS_ID, &retained->settings, sizeof(retained->settings));

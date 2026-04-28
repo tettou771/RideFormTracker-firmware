@@ -644,9 +644,16 @@ static void console_thread(void)
 #endif
 		else if (strcmp(argv[0], "mag_recal") == 0)
 		{
+			// Reset RAM state but keep NVS — useful for tuning without
+			// losing the persisted bias if the next attempt is worse.
 			extern void rft_mag_cal_reset(void);
 			rft_mag_cal_reset();
-			printk("mag calibration state reset — shake the tracker to recalibrate\n");
+			printk("mag calibration RAM state reset — shake the tracker to recalibrate (NVS bias kept)\n");
+		}
+		else if (strcmp(argv[0], "mag_clear") == 0)
+		{
+			extern void rft_mag_clear_bias(void);
+			rft_mag_clear_bias();
 		}
 		else if (strcmp(argv[0], "mag_off") == 0)
 		{

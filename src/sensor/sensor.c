@@ -42,31 +42,71 @@ static rls_sphere_t mag_rls;
 // 0 = compile-time SENSOR_MAGNETOMETER_AXES_ALIGNMENT, 1-7 = predefined alternatives.
 int rft_mag_axes_mode = 0;
 
+// RFT diagnostic: count how many times update_mag was actually called.
+// Prints in the 2s log so we can see if mag is reaching VQF after cal_done.
+static uint32_t rft_update_mag_count = 0;
+
 // RFT diagnostic: capture last m[] vector that was fed to VQF (post-alignment,
 // post-RLS-bias-subtraction). Used by the 2s log to check if the corrected mag
 // actually rotates with physical motion or stays anchored to PCB.
 float rft_last_m_to_vqf[3] = {0};
 
-// RFT calibration tracking: gate VQF mag updates on a coverage + stability
-// criterion (the SlimeVR original behaviour, but with online RLS instead of
-// the 6-side ritual). Without this, partial RLS convergence feeds garbage
-// to VQF and confuses heading estimation.
-uint8_t  rft_octants_visited = 0;              // bitmap of 8 octants seen
+// RFT calibration tracking: gate VQF mag updates on coverage + stability
+// criterion. Without this, partial RLS convergence feeds garbage into VQF
+// and the heading estimate locks to an arbitrary direction.
+//
+// Coverage now comes directly from the voxel-binned RLS — number of unique
+// voxels that have observed mag samples. The full sphere of radius 0.45G
+// at voxel size 0.3G crosses ~28 voxels; we want at least ~16 of them.
 static int64_t  rft_last_bias_check_time = 0;
 static float    rft_prev_bias_check[3] = {0};
 int      rft_stable_check_count = 0;            // consecutive stable 1s checks
 bool     rft_mag_cal_done = false;
 int      rft_mag_cal_progress = 0;              // 0-100 (sent over HID)
-bool     rft_mag_in_motion = false;             // gates calibration tracking
+static const int RFT_MAG_TARGET_VOXELS = 18;    // ~64% of full sphere coverage
+static const int RFT_MAG_TARGET_OCTANTS = 6;    // 6/8 sign octants — guards
+                                                // against single-hemisphere fits
 
 void rft_mag_cal_reset(void)
 {
-	rft_octants_visited = 0;
+	rls_sphere_init(&mag_rls, 0.45f, 0.02f);
 	rft_stable_check_count = 0;
 	rft_mag_cal_done = false;
 	rft_mag_cal_progress = 0;
 	rft_last_bias_check_time = 0;
 	memset(rft_prev_bias_check, 0, sizeof(rft_prev_bias_check));
+}
+
+// Persist mag bias to NVS so calibration survives reboot.
+// Storage: 3 floats = 12 bytes, mirrored in retained->magBias.
+void rft_mag_save_bias(const float bias[3])
+{
+	memcpy(retained->magBias, bias, sizeof(retained->magBias));
+	sys_write(RFT_MAG_BIAS_ID, &retained->magBias, retained->magBias, sizeof(retained->magBias));
+	printk("RFT_MAG: saved bias=[%.3f %.3f %.3f] to NVS\n",
+		(double)bias[0], (double)bias[1], (double)bias[2]);
+}
+
+// Load mag bias from NVS at boot. Returns true if a non-zero bias was loaded.
+static bool rft_mag_load_bias(void)
+{
+	float zero[3] = {0};
+	if (memcmp(retained->magBias, zero, sizeof(zero)) == 0) return false;
+	rls_sphere_set_bias(&mag_rls, retained->magBias);
+	rft_mag_cal_done = true;
+	rft_mag_cal_progress = 100;
+	printk("RFT_MAG: loaded bias=[%.3f %.3f %.3f] from NVS\n",
+		(double)retained->magBias[0], (double)retained->magBias[1], (double)retained->magBias[2]);
+	return true;
+}
+
+void rft_mag_clear_bias(void)
+{
+	float zero[3] = {0, 0, 0};
+	memcpy(retained->magBias, zero, sizeof(retained->magBias));
+	sys_write(RFT_MAG_BIAS_ID, &retained->magBias, retained->magBias, sizeof(retained->magBias));
+	rft_mag_cal_reset();
+	printk("RFT_MAG: NVS bias cleared, calibration state reset\n");
 }
 
 #define SPI_OP SPI_MODE_CPOL | SPI_MODE_CPHA | SPI_WORD_SET(8)
@@ -762,6 +802,9 @@ int sensor_init(void)
 		// learning rate 0.02. With 3 unknowns (vs 4-DOF RLS) the fit can't
 		// settle on a tiny "false" sphere centered on a static pose.
 		rls_sphere_init(&mag_rls, 0.45f, 0.02f);
+		// Load persisted bias if available — skips the calibration ritual
+		// on every boot. Use console `mag_recal` (or Deck) to redo.
+		rft_mag_load_bias();
 	}
 	LOG_INF("Initialized sensors");
 
@@ -1035,22 +1078,15 @@ void sensor_loop(void)
 
 #if RFT_MAG_EXPERIMENT
 					// RFT experiment: online hard iron estimation via RLS sphere fit.
-					// Only update during real motion so the sphere fit doesn't drift
-					// toward the resting cluster (which would falsely declare a
-					// well-fitted small sphere centered on whatever pose the user
-					// happens to leave the tracker in).
-					static float rft_last_motion_raw[3] = {0, 0, 0};
-					float drm0 = raw_m[0] - rft_last_motion_raw[0];
-					float drm1 = raw_m[1] - rft_last_motion_raw[1];
-					float drm2 = raw_m[2] - rft_last_motion_raw[2];
-					float drm = sqrtf(drm0*drm0 + drm1*drm1 + drm2*drm2);
-					extern bool rft_mag_in_motion;
-					rft_mag_in_motion = (drm > 0.02f); // 0.02 G delta = real motion
-					if (rft_mag_in_motion) {
-						memcpy(rft_last_motion_raw, raw_m, sizeof(rft_last_motion_raw));
-						if (!rft_mag_cal_done) {
-							rls_sphere_update(&mag_rls, raw_m);
-						}
+					// No motion gating needed — voxel-binning dedups static samples
+					// (same voxel = newest sample wins, single bin contribution
+					// regardless of how long the tracker sits there). A separate
+					// motion gate just adds noise-driven misfires and forces UI
+					// progress to bounce around for no benefit.
+					// Once calibration is done, skip the RLS update entirely —
+					// bias is frozen at the saved value.
+					if (!rft_mag_cal_done) {
+						rls_sphere_update(&mag_rls, raw_m);
 					}
 					float mag_bias[3];
 					rls_sphere_get_bias(&mag_rls, mag_bias);
@@ -1082,19 +1118,26 @@ void sensor_loop(void)
 				bool m_valid = isfinite(m[0]) && isfinite(m[1]) && isfinite(m[2])
 					&& fabsf(m[0]) < 10.0f && fabsf(m[1]) < 10.0f && fabsf(m[2]) < 10.0f;
 
-				// RFT calibration progress tracking — only when actually moving
-				// (rft_mag_in_motion was set above in the RLS update path)
-				if (m_valid && rft_mag_in_motion)
+				// RFT calibration progress + completion tracking. Runs every
+				// valid sample until cal is done. Skip once done — bias is
+				// frozen and stability counters don't matter anymore.
+				if (m_valid && !rft_mag_cal_done)
 				{
-					// Coverage: which of 8 octants does the corrected mag direction visit?
-					int oct = 0;
-					if (m[0] > 0) oct |= 1;
-					if (m[1] > 0) oct |= 2;
-					if (m[2] > 0) oct |= 4;
-					rft_octants_visited |= (1 << oct);
+					// Coverage signals:
+					//   1. voxel count — distinct 0.3G blocks of mag space visited.
+					//   2. octant count — sign-pattern octants (0..7) covered.
+					//      The latter is the key guard against single-hemisphere
+					//      fits that converge to a wrong sphere center.
+					int voxel_count = rls_sphere_get_voxel_count(&mag_rls);
+					int octant_count = rls_sphere_get_octant_count(&mag_rls);
 
-					// Stability: bias change over 1s windows OF MOTION. After 3 consecutive
-					// motion-windows where bias barely moved, declare calibration done.
+					// Stability: bias change over 1s windows. After 2 consecutive
+					// windows where bias barely moved, the user has stopped
+					// shaking AND the fit has converged — completion gate.
+					// Threshold 30mG/s is loose because RLS gradient runs every
+					// sample (no motion gating); even at rest the bias jitters
+					// a few mG as different voxels pull in slightly different
+					// directions. 5mG was too tight to ever satisfy.
 					int64_t now = k_uptime_get();
 					if (now - rft_last_bias_check_time > 1000)
 					{
@@ -1104,29 +1147,43 @@ void sensor_loop(void)
 						float dy = mb[1] - rft_prev_bias_check[1];
 						float dz = mb[2] - rft_prev_bias_check[2];
 						float change = sqrtf(dx*dx + dy*dy + dz*dz);
-						const float STABILITY_THRESHOLD = 0.005f; // 5 mG drift per second
+						const float STABILITY_THRESHOLD = 0.030f; // 30 mG drift per second
 						if (change < STABILITY_THRESHOLD) rft_stable_check_count++;
 						else rft_stable_check_count = 0;
 						memcpy(rft_prev_bias_check, mb, sizeof(mb));
 						rft_last_bias_check_time = now;
 					}
 
-					int oct_count = __builtin_popcount(rft_octants_visited);
-					int coverage_pct = (oct_count * 100) / 8;
-					int stability_pct = (rft_stable_check_count >= 3) ? 100 : (rft_stable_check_count * 33);
-					rft_mag_cal_progress = (coverage_pct + stability_pct) / 2;
+					// Progress shown to the user is coverage only (min of the
+					// two coverage gates so it reflects the weakest one — usually
+					// octant). Stability is a hidden completion gate; surfacing
+					// it would yo-yo the bar while the user is still shaking.
+					int voxel_pct = (voxel_count * 100) / RFT_MAG_TARGET_VOXELS;
+					if (voxel_pct > 100) voxel_pct = 100;
+					int octant_pct = (octant_count * 100) / RFT_MAG_TARGET_OCTANTS;
+					if (octant_pct > 100) octant_pct = 100;
+					rft_mag_cal_progress = (voxel_pct < octant_pct) ? voxel_pct : octant_pct;
 
-					if (!rft_mag_cal_done && oct_count >= 6 && rft_stable_check_count >= 3)
+					if (voxel_count >= RFT_MAG_TARGET_VOXELS &&
+					    octant_count >= RFT_MAG_TARGET_OCTANTS &&
+					    rft_stable_check_count >= 2)
 					{
 						rft_mag_cal_done = true;
-						printk("RFT_MAG: calibration DONE (octants=%d, stable=%d)\n",
-							oct_count, rft_stable_check_count);
+						printk("RFT_MAG: calibration DONE (voxels=%d, octants=%d, stable=%d)\n",
+							voxel_count, octant_count, rft_stable_check_count);
+						// Persist bias to NVS so user doesn't have to recalibrate after reboot
+						float mb[3];
+						rls_sphere_get_bias(&mag_rls, mb);
+						extern void rft_mag_save_bias(const float bias[3]);
+						rft_mag_save_bias(mb);
 					}
 				}
 
 				// Only feed VQF once calibration is complete
-				if (mag_calibrated && m_valid && rft_mag_cal_done)
+				if (mag_calibrated && m_valid && rft_mag_cal_done) {
 					sensor_fusion->update_mag(m, mag_actual_time);
+					rft_update_mag_count++;
+				}
 
 				// RFT diagnostic: capture the mag vector that was fed to VQF so we
 				// can log it (and verify whether it actually rotates with physical
@@ -1168,14 +1225,23 @@ void sensor_loop(void)
 					uint32_t int_count = rft_int_count;
 					uint32_t int_per_sec = (int_count - last_int_count) / 2;
 					last_int_count = int_count;
-					printk("RFT_MAG: raw|B|=%.3f r=%.3f m=[%.2f %.2f %.2f] |m|=%.2f cal=%d%% calDone=%d int/s=%u mode=%d\n",
+					static uint32_t last_um_count = 0;
+					uint32_t um_per_sec = (rft_update_mag_count - last_um_count) / 2;
+					last_um_count = rft_update_mag_count;
+					float dis_angle_deg = vqf_get_last_mag_dis_angle() * 180.0f / 3.14159265f;
+					int voxels = rls_sphere_get_voxel_count(&mag_rls);
+					int octants = rls_sphere_get_octant_count(&mag_rls);
+					printk("RFT_MAG: raw|B|=%.3f r=%.3f m=[%.2f %.2f %.2f] |m|=%.2f d=%+.1f cal=%d%% v=%d o=%d s=%d calDone=%d int/s=%u um/s=%u mode=%d\n",
 						(double)mag_norm,
 						(double)mag_radius,
 						(double)rft_last_m_to_vqf[0], (double)rft_last_m_to_vqf[1], (double)rft_last_m_to_vqf[2],
 						(double)m_norm,
+						(double)dis_angle_deg,
 						rft_mag_cal_progress,
+						voxels, octants, rft_stable_check_count,
 						rft_mag_cal_done ? 1 : 0,
 						int_per_sec,
+						um_per_sec,
 						rft_mag_axes_mode);
 				}
 			}
