@@ -49,6 +49,21 @@
 #define SENSOR_QUATERNION_CORRECTION 0.0f, 0.7071f, 0.7071f, 0.0f
 #endif
 
+// RFT v1.1: IIS2MDC is mounted rotated relative to LSM6DSV (pin1 markers
+// differ). The macro maps mag-chip-local (mx,my,mz) into IMU-body axes.
+// Try one of these (uncomment one); the right one is whichever makes
+// the disagreement angle (`d` in Deck) stay near 0 while you rotate the
+// tracker to different poses:
+//   #define SENSOR_MAGNETOMETER_AXES_ALIGNMENT  mx,  my,  mz   // 0°
+//   #define SENSOR_MAGNETOMETER_AXES_ALIGNMENT -my,  mx,  mz   // 90° CCW around Z
+//   #define SENSOR_MAGNETOMETER_AXES_ALIGNMENT -mx, -my,  mz   // 180°
+//   #define SENSOR_MAGNETOMETER_AXES_ALIGNMENT  my, -mx,  mz   // 270° CCW (= 90° CW)
+// If d still drifts during pure tilt (no yaw), one axis is upside down:
+//   try negating mz, or swapping the X/Y as above with -mz instead.
+#if defined(CONFIG_BOARD_RFT_PCB_V1_1)
+#define SENSOR_MAGNETOMETER_AXES_ALIGNMENT -my, -mx, mz  // datasheet-derived (default)
+#endif
+
 #ifndef SENSOR_MAGNETOMETER_AXES_ALIGNMENT
 // mag axes alignment to sensor body
 #define SENSOR_MAGNETOMETER_AXES_ALIGNMENT my, -mx, -mz

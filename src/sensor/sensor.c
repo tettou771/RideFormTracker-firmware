@@ -38,6 +38,10 @@
 // RFT experiment: online hard iron estimator (see MAG_CALIBRATION.md)
 static rls_sphere_t mag_rls;
 
+// RFT diagnostic: runtime-switchable mag axes alignment (see console `mag_axes <0-7>`).
+// 0 = compile-time SENSOR_MAGNETOMETER_AXES_ALIGNMENT, 1-7 = predefined alternatives.
+int rft_mag_axes_mode = 0;
+
 #define SPI_OP SPI_MODE_CPOL | SPI_MODE_CPHA | SPI_WORD_SET(8)
 
 #if DT_NODE_HAS_STATUS(DT_NODELABEL(imu_spi), okay)
@@ -1015,7 +1019,20 @@ void sensor_loop(void)
 				float mx = raw_m[0];
 				float my = raw_m[1];
 				float mz = raw_m[2];
-				float m[] = {SENSOR_MAGNETOMETER_AXES_ALIGNMENT};
+				// RFT: runtime-switchable mag axes alignment for empirical tuning.
+				// `mag_axes <0-7>` console command picks one. Default 0 = compile-time macro.
+				extern int rft_mag_axes_mode;
+				float m[3];
+				switch (rft_mag_axes_mode) {
+					case 1: m[0] = -my; m[1] =  mx; m[2] =  mz; break; //  90° CCW
+					case 2: m[0] = -mx; m[1] = -my; m[2] =  mz; break; // 180°
+					case 3: m[0] =  my; m[1] = -mx; m[2] =  mz; break; // 270° CCW
+					case 4: m[0] =  mx; m[1] = -my; m[2] =  mz; break; //  Y mirror
+					case 5: m[0] = -mx; m[1] =  my; m[2] =  mz; break; //  X mirror
+					case 6: m[0] =  my; m[1] =  mx; m[2] =  mz; break; //  XY swap
+					case 7: m[0] = -my; m[1] = -mx; m[2] =  mz; break; //  XY swap + neg
+					default: { float _m[] = {SENSOR_MAGNETOMETER_AXES_ALIGNMENT}; m[0]=_m[0]; m[1]=_m[1]; m[2]=_m[2]; } break;
+				}
 
 				// Process fusion (with safety check: skip if non-finite or out of range)
 				bool m_valid = isfinite(m[0]) && isfinite(m[1]) && isfinite(m[2])
