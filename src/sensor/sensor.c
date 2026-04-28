@@ -1204,11 +1204,13 @@ void sensor_loop(void)
 			// Triggered every loop iteration so values are always fresh in HID
 			if (sensor_fusion == &sensor_fusion_vqf)
 			{
-				float sphere_r = rls_sphere_get_radius(&mag_rls);
 				float dis_angle = vqf_get_last_mag_dis_angle();
-				// cal_progress (0-1) sent in the bias-magnitude slot
-				float cal_progress_g = rft_mag_cal_progress / 100.0f;
-				connection_update_sensor_diag(dis_angle, cal_progress_g, sphere_r);
+				connection_update_sensor_diag(dis_angle, 0.0f, 0.0f);
+				// Packet 8 (when streaming): also report current tracker-side
+				// bias + cal-done flag.
+				float mb[3];
+				rls_sphere_get_bias(&mag_rls, mb);
+				connection_update_sensor_mag_bias(mb, rft_mag_cal_done);
 			}
 
 			// RFT experiment: log VQF mag state every 2s regardless of whether

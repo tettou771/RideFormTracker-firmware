@@ -110,22 +110,32 @@ void connection_update_sensor_mag(float *m)
 	mag_update_time = k_uptime_get();
 }
 
-// RFT: raw (uncorrected) magnetometer captured in sensor.c, sent in packet 4.
-// PC-side does sphere fit, so we ship the raw m here. Bias is applied on the
-// tracker BEFORE feeding VQF, but the wire format here is uncorrected so the
-// PC can run its own calibration without re-doing what the tracker did.
+// RFT: raw mag + tracker-side bias for PC-side visualisation. Sent in the
+// new low-rate packet 8 (~10Hz, matching mag sampling). Real-time-changing
+// values like the disturbance angle d stay in packet 4 at full rate.
 static float sensor_raw_mag[3] = {0, 0, 0};
+static float sensor_mag_bias[3] = {0, 0, 0};
+static uint8_t sensor_mag_cal_done = 0;
 
 void connection_update_sensor_raw_mag(const float m[3])
 {
 	memcpy(sensor_raw_mag, m, sizeof(sensor_raw_mag));
 }
 
-/* Legacy stub: keeps existing call sites in sensor.c compiling. The diag
- * values are no longer transmitted — d is computed on PC from raw mag+quat. */
+void connection_update_sensor_mag_bias(const float bias[3], bool cal_done)
+{
+	memcpy(sensor_mag_bias, bias, sizeof(sensor_mag_bias));
+	sensor_mag_cal_done = cal_done ? 1 : 0;
+}
+
+// VQF heading disturbance angle (rad, ±π). Sent in packet 4.
+static float sensor_diag_dis_angle = 0.0f;
+
 void connection_update_sensor_diag(float disAngle, float biasMag, float sphereR)
 {
-	(void)disAngle; (void)biasMag; (void)sphereR;
+	sensor_diag_dis_angle = disAngle;
+	(void)biasMag;   /* now part of packet 8 */
+	(void)sphereR;   /* PC computes sphere fit, no longer transmitted */
 }
 
 void connection_update_sensor_temp(float temp)
@@ -338,7 +348,7 @@ void connection_write_packet_3() // status
 	hid_write_packet_n(data); // TODO:
 }
 
-void connection_write_packet_4() // RFT: full precision quat + raw mag for PC-side cal
+void connection_write_packet_4() // RFT: full precision quat + d (real-time)
 {
 	uint8_t data[16] = {0};
 	data[0] = 4; // packet 4
@@ -348,11 +358,11 @@ void connection_write_packet_4() // RFT: full precision quat + raw mag for PC-si
 	buf[1] = TO_FIXED_15(sensor_q[2]);
 	buf[2] = TO_FIXED_15(sensor_q[3]);
 	buf[3] = TO_FIXED_15(sensor_q[0]);
-	// 6 mag bytes: 3 × int16 Q11 raw (uncorrected) magnetic field in Gauss.
-	// Range ±16G covers the worst-case hard iron + geomag (typically <2G).
-	buf[4] = TO_FIXED_11(sensor_raw_mag[0]);
-	buf[5] = TO_FIXED_11(sensor_raw_mag[1]);
-	buf[6] = TO_FIXED_11(sensor_raw_mag[2]);
+	// 6 trailing bytes: VQF disturbance angle d (Q11, ±16 rad), 4 reserved.
+	// raw_mag + bias moved to packet 8 (low-rate, on-demand).
+	buf[4] = TO_FIXED_11(sensor_diag_dis_angle);
+	buf[5] = 0;
+	buf[6] = 0;
 	int ret = k_mutex_lock(&data_buffer_mutex, K_MSEC(100));
 	if (ret) {
 		LOG_ERR("Failed mutex lock");
@@ -363,6 +373,34 @@ void connection_write_packet_4() // RFT: full precision quat + raw mag for PC-si
 //	esb_write(data); // TODO: schedule in thread
 	k_mutex_unlock(&data_buffer_mutex);
 	hid_write_packet_n(data); // TODO:
+}
+
+// Packet 8: raw mag + tracker bias + cal_done flag. Sent on demand only when
+// PC requests via STREAM_RAW_MAG=on (e.g., user pressed Reset to recalibrate).
+// Layout: [0]=8, [1]=id, [2..7]=raw mag (3×Q11), [8..13]=bias (3×Q11),
+// [14]=cal_done (0/1), [15]=reserved.
+void connection_write_packet_8()
+{
+	uint8_t data[16] = {0};
+	data[0] = 8;
+	data[1] = tracker_id;
+	uint16_t *buf = (uint16_t *)&data[2];
+	buf[0] = TO_FIXED_11(sensor_raw_mag[0]);
+	buf[1] = TO_FIXED_11(sensor_raw_mag[1]);
+	buf[2] = TO_FIXED_11(sensor_raw_mag[2]);
+	buf[3] = TO_FIXED_11(sensor_mag_bias[0]);
+	buf[4] = TO_FIXED_11(sensor_mag_bias[1]);
+	buf[5] = TO_FIXED_11(sensor_mag_bias[2]);
+	data[14] = sensor_mag_cal_done;
+	int ret = k_mutex_lock(&data_buffer_mutex, K_MSEC(100));
+	if (ret) {
+		LOG_ERR("Failed mutex lock");
+		return;
+	}
+	memcpy(data_buffer, data, sizeof(data));
+	last_data_time = k_uptime_get();
+	k_mutex_unlock(&data_buffer_mutex);
+	hid_write_packet_n(data);
 }
 
 void connection_write_packet_5() // runtime
@@ -502,6 +540,12 @@ void connection_thread(void)
 			mag_update_time = 0; // data has been sent
 			last_mag_time = k_uptime_get();
 			connection_write_packet_4();
+			// Packet 8 (raw mag + bias) only when PC has requested the stream.
+			// Same mag tick so its rate matches real mag samples.
+			extern volatile bool rft_mag_stream_enabled;
+			if (rft_mag_stream_enabled) {
+				connection_write_packet_8();
+			}
 			continue;
 		}
 		// if time for info and precise quat not needed

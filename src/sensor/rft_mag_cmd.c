@@ -17,6 +17,11 @@ extern void rft_mag_save_bias(const float bias[3]);
 extern void rft_mag_clear_bias(void);
 extern void rft_mag_cal_reset(void);
 
+/* Packet 8 streaming flag, read by sensor.c to gate transmission of the
+ * raw_mag + bias announcement packet. Default off — tracker stays quiet
+ * unless the PC explicitly asks for the data (e.g., user pressed Reset). */
+volatile bool rft_mag_stream_enabled = false;
+
 /* Pending command captured in ISR, executed by work-queue handler. */
 static struct {
 	uint8_t type;
@@ -58,6 +63,10 @@ static void rft_mag_cmd_work_handler(struct k_work *work)
 	case RFT_CMD_MAG_RECAL:
 		LOG_INF("RX MAG_RECAL");
 		rft_mag_cal_reset();
+		break;
+	case RFT_CMD_STREAM_RAW_MAG:
+		rft_mag_stream_enabled = (buf[0] != 0);
+		LOG_INF("RX STREAM_RAW_MAG=%d", (int)rft_mag_stream_enabled);
 		break;
 	default:
 		LOG_WRN("Unknown cmd type %u", type);

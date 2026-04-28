@@ -35,11 +35,16 @@ void connection_update_sensor_ids(int imu_id, int mag_id);
 void connection_update_sensor_data(float *q, float *a, int64_t data_time); // ticks
 void connection_update_sensor_mag(float *m);
 
-// RFT: raw (uncorrected) mag for PC-side calibration. Sent in packet 4.
+// RFT: raw (uncorrected) mag for PC-side calibration. Captured here, sent in
+// packet 8 when the PC has requested streaming.
 void connection_update_sensor_raw_mag(const float m[3]);
 
-// Legacy stub kept for source compat — diag is no longer transmitted (PC
-// computes from raw mag + quat).
+// RFT: tracker-side bias + cal-done flag, sent alongside raw_mag in packet 8.
+void connection_update_sensor_mag_bias(const float bias[3], bool cal_done);
+
+// VQF heading disturbance angle (rad, ±π). Sent in packet 4 every frame.
+// (biasMag and sphereR args are ignored — they used to share this slot but
+// are now PC-side computations.)
 void connection_update_sensor_diag(float disAngle, float biasMag, float sphereR);
 void connection_update_sensor_temp(float temp);
 void connection_update_sensor_timeout_time(int64_t timeout);
@@ -55,5 +60,6 @@ void connection_write_packet_2(void);
 void connection_write_packet_3(void);
 void connection_write_packet_4(void);
 void connection_write_packet_5(void);
+void connection_write_packet_8(void);  // raw mag + bias (on-demand stream)
 
 #endif
