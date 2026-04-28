@@ -51,31 +51,44 @@ static void rft_mag_cmd_work_handler(struct k_work *work)
 			qy * (1.0f / 2048.0f),
 			qz * (1.0f / 2048.0f)
 		};
-		LOG_INF("RX SET_MAG_BIAS [%.3f %.3f %.3f]",
-		        (double)bias[0], (double)bias[1], (double)bias[2]);
+		printk("RFT_CMD: RX SET_MAG_BIAS [%.3f %.3f %.3f]\n",
+		       (double)bias[0], (double)bias[1], (double)bias[2]);
 		rft_mag_save_bias(bias);
 		break;
 	}
 	case RFT_CMD_CLEAR_MAG_BIAS:
-		LOG_INF("RX CLEAR_MAG_BIAS");
+		printk("RFT_CMD: RX CLEAR_MAG_BIAS\n");
 		rft_mag_clear_bias();
 		break;
 	case RFT_CMD_MAG_RECAL:
-		LOG_INF("RX MAG_RECAL");
+		printk("RFT_CMD: RX MAG_RECAL\n");
 		rft_mag_cal_reset();
 		break;
 	case RFT_CMD_STREAM_RAW_MAG:
 		rft_mag_stream_enabled = (buf[0] != 0);
-		LOG_INF("RX STREAM_RAW_MAG=%d", (int)rft_mag_stream_enabled);
+		printk("RFT_CMD: RX STREAM_RAW_MAG=%d\n", (int)rft_mag_stream_enabled);
 		break;
 	default:
-		LOG_WRN("Unknown cmd type %u", type);
+		printk("RFT_CMD: unknown type %u\n", type);
 		break;
 	}
 }
 
 void rft_mag_cmd_handle_rx(const uint8_t slot[10], uint8_t my_tracker_id)
 {
+	// Diagnostic: count every sync RX so we can confirm the path is alive
+	// even when no command targets us. Prints once a second.
+	static volatile uint32_t sync_rx_count = 0;
+	static int64_t last_log_ms = 0;
+	sync_rx_count++;
+	int64_t now_ms = k_uptime_get();
+	if (now_ms - last_log_ms > 1000) {
+		last_log_ms = now_ms;
+		printk("RFT_CMD: sync_rx/s=%u target=%u (me=%u) type=%u\n",
+		       sync_rx_count, slot[0], my_tracker_id, slot[1]);
+		sync_rx_count = 0;
+	}
+
 	uint8_t target = slot[0];
 	if (target == RFT_CMD_NO_TARGET || target != my_tracker_id) return;
 
