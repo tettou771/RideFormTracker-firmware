@@ -29,6 +29,7 @@
 #include <hal/nrf_clock.h>
 #endif /* defined(NRF54L15_XXAA) */
 #include <zephyr/sys/crc.h>
+#include <zephyr/sys/reboot.h>
 
 #include "esb.h"
 
@@ -43,6 +44,26 @@ uint32_t led_clock_offset = 0;
 uint32_t tx_errors = 0;
 int64_t last_tx_success = 0;
 int64_t last_tx_fail = 0;
+
+/* RFT diagnostic: per-second TX outcome counters. Reset by the periodic
+ * stats logger in esb_thread. Helps tell, when the receiver's
+ * RFT_RX_PER shows this tracker silent, whether the tracker is still
+ * trying to TX (= radio level loss, lots of TX_FAILED) or has stopped
+ * trying entirely (driver hung, both counters frozen). */
+static volatile uint32_t rft_tx_ok_count = 0;
+static volatile uint32_t rft_tx_fail_count = 0;
+static volatile uint32_t rft_tx_call_count = 0;
+
+/* RFT auto-recovery: timestamp of the most recent ESB event (TX_SUCCESS,
+ * TX_FAILED, or RX_RECEIVED). When the gap between now and this exceeds
+ * RFT_HUNG_THRESHOLD_MS, we treat the ESB driver as hung and run the
+ * recovery sequence (esb_disable + esb_initialize). */
+static volatile int64_t rft_last_esb_event_ms = 0;
+static int64_t rft_last_recover_ms = 0;
+static int rft_recover_count = 0;
+#define RFT_HUNG_THRESHOLD_MS    5000  /* 5s no events while paired = hung */
+#define RFT_RECOVER_RATE_LIMIT_MS 30000 /* don't re-init faster than this */
+#define RFT_REBOOT_THRESHOLD_MS  60000  /* if still hung 60s after re-init, reboot */
 
 static struct esb_payload rx_payload;
 static struct esb_payload tx_payload = ESB_CREATE_PAYLOAD(0,
@@ -80,6 +101,8 @@ void event_handler(struct esb_evt const *event)
 	switch (event->evt_id)
 	{
 	case ESB_EVENT_TX_SUCCESS:
+		rft_tx_ok_count++;
+		rft_last_esb_event_ms = k_uptime_get();
 		if (!paired_addr[0]) // zero, not paired
 			pairing_packets++; // keep track of pairing state
 		if (tx_errors >= TX_ERROR_THRESHOLD && tx_errors < TX_ERROR_THRESHOLD + TX_ERROR_CLEAR_RATE && last_tx_fail == 0)
@@ -96,6 +119,8 @@ void event_handler(struct esb_evt const *event)
 			clocks_stop();
 		break;
 	case ESB_EVENT_TX_FAILED:
+		rft_tx_fail_count++;
+		rft_last_esb_event_ms = k_uptime_get();
 		if (tx_errors < TX_ERROR_MAX)
 			tx_errors++;
 		if (tx_errors == TX_ERROR_THRESHOLD && last_tx_success == 0) // consecutive failure to transmit
@@ -108,6 +133,7 @@ void event_handler(struct esb_evt const *event)
 			clocks_stop();
 		break;
 	case ESB_EVENT_RX_RECEIVED:
+		rft_last_esb_event_ms = k_uptime_get();
 		// TODO: have to read rx until -ENODATA (or -EACCES/-EINVAL)
 		if (!esb_read_rx_payload(&rx_payload)) // zero, rx success
 		{
@@ -538,6 +564,62 @@ static void esb_thread(void)
 		{
 			set_status(SYS_STATUS_CONNECTION_ERROR, false);
 		}
+
+		/* RFT diagnostic: per-second TX outcome stats. Reset counters
+		 * after printing. Distinguishes "fully hung" (both ok=0 and
+		 * fail=0 → ESB driver dead) from "partial loss" (fail high,
+		 * ok low → radio level loss). */
+		static int64_t rft_last_tx_log = 0;
+		int64_t rft_now = k_uptime_get();
+		if (rft_now - rft_last_tx_log > 1000) {
+			rft_last_tx_log = rft_now;
+			printk("RFT_TX: ok/s=%u fail/s=%u tx_errors=%u init=%d paired=%d\n",
+			       (unsigned)rft_tx_ok_count, (unsigned)rft_tx_fail_count,
+			       (unsigned)tx_errors, (int)esb_initialized,
+			       (int)esb_paired);
+			rft_tx_ok_count = 0;
+			rft_tx_fail_count = 0;
+		}
+
+		/* RFT auto-recovery: detect hung ESB driver and try to recover.
+		 * Hang signature: paired+initialized but no TX/RX events for >5s.
+		 * Recovery escalation:
+		 *   1st detection -> esb_disable() + esb_initialize() (~50ms)
+		 *   Still hung 60s later -> sys_reboot (full restart, ~3s)
+		 * Rate-limited to avoid loops; one re-init per 30s max. */
+		if (esb_initialized && esb_paired && rft_last_esb_event_ms != 0) {
+			int64_t since_last = rft_now - rft_last_esb_event_ms;
+			int64_t since_recover = rft_last_recover_ms == 0
+			                        ? INT64_MAX
+			                        : rft_now - rft_last_recover_ms;
+			if (since_last > RFT_HUNG_THRESHOLD_MS &&
+			    since_recover > RFT_RECOVER_RATE_LIMIT_MS) {
+				/* Already tried re-init once and still hung that long?
+				 * Hard reset. */
+				if (rft_last_recover_ms != 0 &&
+				    since_last > RFT_REBOOT_THRESHOLD_MS) {
+					printk("RFT_ESB_REBOOT: re-init didn't recover in %llds, rebooting\n",
+					       since_last / 1000);
+					k_msleep(50);
+					sys_reboot(SYS_REBOOT_COLD);
+				}
+				printk("RFT_ESB_REINIT: hung for %llds, attempting recovery (count=%d)\n",
+				       since_last / 1000, ++rft_recover_count);
+				esb_deinitialize();
+				k_msleep(20);
+				int err = esb_initialize(false);
+				if (err == 0) {
+					esb_set_addr_paired();
+					esb_start_rx();
+					printk("RFT_ESB_REINIT: ok\n");
+				} else {
+					printk("RFT_ESB_REINIT: esb_initialize failed err=%d\n", err);
+				}
+				rft_last_recover_ms = rft_now;
+				rft_last_esb_event_ms = rft_now; /* give it time to recover */
+			}
+		}
+
 		k_msleep(100);
 	}
 }
