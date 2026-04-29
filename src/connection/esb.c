@@ -490,8 +490,14 @@ void esb_write(uint8_t *data)
 	tx_payload.noack = false;
 #endif
 	memcpy(tx_payload.data, data, tx_payload.length);
-	esb_flush_tx(); // this will clear all transmissions even if they did not complete
-	esb_write_payload(&tx_payload); // Add transmission to queue
+	// Upstream behaviour: each esb_write flushes the prior pending TX. This
+	// abandons retries on stale packets so fresh data isn't blocked. Side
+	// effect for our pkt4→pkt8→pkt9 chain: the last write usually wins,
+	// earlier ones in the same mag tick get clobbered. Acceptable trade-off
+	// because pkt9 (the diagnostic) is at the end and wins the race; keeping
+	// flush avoids retry-induced FIFO stalls that destabilise the link.
+	esb_flush_tx();
+	esb_write_payload(&tx_payload);
 	send_data = true;
 }
 

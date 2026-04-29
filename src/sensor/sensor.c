@@ -38,10 +38,6 @@
 // RFT experiment: online hard iron estimator (see MAG_CALIBRATION.md)
 static rls_sphere_t mag_rls;
 
-// RFT diagnostic: runtime-switchable mag axes alignment (see console `mag_axes <0-7>`).
-// 0 = compile-time SENSOR_MAGNETOMETER_AXES_ALIGNMENT, 1-7 = predefined alternatives.
-int rft_mag_axes_mode = 0;
-
 // RFT diagnostic: count how many times update_mag was actually called.
 // Prints in the 2s log so we can see if mag is reaching VQF after cal_done.
 static uint32_t rft_update_mag_count = 0;
@@ -1103,19 +1099,11 @@ void sensor_loop(void)
 				float mx = raw_m[0];
 				float my = raw_m[1];
 				float mz = raw_m[2];
-				// RFT: runtime-switchable mag axes alignment for empirical tuning.
-				// `mag_axes <0-7>` console command picks one. Default 0 = compile-time macro.
-				extern int rft_mag_axes_mode;
+				(void)mx; (void)my; (void)mz; // referenced by the alignment macro
 				float m[3];
-				switch (rft_mag_axes_mode) {
-					case 1: m[0] = -my; m[1] =  mx; m[2] =  mz; break; //  90° CCW
-					case 2: m[0] = -mx; m[1] = -my; m[2] =  mz; break; // 180°
-					case 3: m[0] =  my; m[1] = -mx; m[2] =  mz; break; // 270° CCW
-					case 4: m[0] =  mx; m[1] = -my; m[2] =  mz; break; //  Y mirror
-					case 5: m[0] = -mx; m[1] =  my; m[2] =  mz; break; //  X mirror
-					case 6: m[0] =  my; m[1] =  mx; m[2] =  mz; break; //  XY swap
-					case 7: m[0] = -my; m[1] = -mx; m[2] =  mz; break; //  XY swap + neg
-					default: { float _m[] = {SENSOR_MAGNETOMETER_AXES_ALIGNMENT}; m[0]=_m[0]; m[1]=_m[1]; m[2]=_m[2]; } break;
+				{
+					float _m[] = {SENSOR_MAGNETOMETER_AXES_ALIGNMENT};
+					m[0] = _m[0]; m[1] = _m[1]; m[2] = _m[2];
 				}
 
 				// Process fusion (with safety check: skip if non-finite or out of range)
@@ -1217,8 +1205,10 @@ void sensor_loop(void)
 				float magEarth[3];
 				vqf_get_last_mag_earth(magEarth);
 				float delta = vqf_get_delta();
-				connection_update_sensor_mag_diag(rft_last_m_to_vqf, magEarth,
-				                                  delta, (uint8_t)rft_mag_axes_mode);
+				// mag_axes_mode argument retired (compile-time alignment is now
+				// the single source of truth). Send 0 so the byte is reserved
+				// for future use without changing the wire format.
+				connection_update_sensor_mag_diag(rft_last_m_to_vqf, magEarth, delta, 0);
 			}
 
 			// RFT experiment: log VQF mag state every 2s regardless of whether
@@ -1245,7 +1235,7 @@ void sensor_loop(void)
 					float dis_angle_deg = vqf_get_last_mag_dis_angle() * 180.0f / 3.14159265f;
 					int voxels = rls_sphere_get_voxel_count(&mag_rls);
 					int octants = rls_sphere_get_octant_count(&mag_rls);
-					printk("RFT_MAG: raw|B|=%.3f r=%.3f m=[%.2f %.2f %.2f] |m|=%.2f d=%+.1f cal=%d%% v=%d o=%d s=%d calDone=%d int/s=%u um/s=%u mode=%d\n",
+					printk("RFT_MAG: raw|B|=%.3f r=%.3f m=[%.2f %.2f %.2f] |m|=%.2f d=%+.1f cal=%d%% v=%d o=%d s=%d calDone=%d int/s=%u um/s=%u\n",
 						(double)mag_norm,
 						(double)mag_radius,
 						(double)rft_last_m_to_vqf[0], (double)rft_last_m_to_vqf[1], (double)rft_last_m_to_vqf[2],
@@ -1255,8 +1245,7 @@ void sensor_loop(void)
 						voxels, octants, rft_stable_check_count,
 						rft_mag_cal_done ? 1 : 0,
 						int_per_sec,
-						um_per_sec,
-						rft_mag_axes_mode);
+						um_per_sec);
 				}
 			}
 

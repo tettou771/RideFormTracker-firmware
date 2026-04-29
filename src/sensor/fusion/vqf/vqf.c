@@ -56,6 +56,13 @@ static void set_params()
 	// acceptance even with reasonable mag input. tauMag=10s naturally
 	// filters short-term disturbances at the heading correction stage.
 	params.magDistRejectionEnabled = false;
+	// RFT: do NOT let mag drive heading. Wearable on a motorcycle / near
+	// any ferrous object → local field swamps Earth's. We still want the
+	// mag readings for visualisation (disturbance indicator on the Deck),
+	// but the fused orientation should be 6DoF (gyro+accel only) so
+	// magnetic disturbance doesn't corrupt it. updateMag() still runs and
+	// populates lastMagEarth/lastMagDisAngle for diagnostics.
+	params.magDeltaUpdateEnabled = false;
 	// best result from optimizer
 	params.biasForgettingTime = 136.579346;
 	params.biasSigmaInit = 3.219453;

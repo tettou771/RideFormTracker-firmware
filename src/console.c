@@ -555,8 +555,6 @@ static void console_thread(void)
 #if SENSOR_MAG_EXISTS
 	const char command_mag[] = "mag";
 #endif
-	// RFT: runtime-switchable mag axes alignment for empirical tuning
-	const char command_mag_axes[] = "mag_axes";
 	const char command_set[] = "set";
 	const char command_pair[] = "pair";
 	const char command_clear[] = "clear";
@@ -666,33 +664,6 @@ static void console_thread(void)
 			extern bool mag_enabled;
 			mag_enabled = true;
 			printk("mag re-enabled\n");
-		}
-		else if (strcmp(argv[0], command_mag_axes) == 0)
-		{
-			extern int rft_mag_axes_mode;
-			static const char *names[8] = {
-				"compile-time default",
-				"90° CCW (-my, mx, mz)",
-				"180° (-mx, -my, mz)",
-				"270° CCW (my, -mx, mz)",
-				"Y mirror (mx, -my, mz)",
-				"X mirror (-mx, my, mz)",
-				"XY swap (my, mx, mz)",
-				"XY swap+neg (-my, -mx, mz)",
-			};
-			if (argc == 2) {
-				int mode = atoi(argv[1]);
-				if (mode >= 0 && mode <= 7) {
-					rft_mag_axes_mode = mode;
-					printk("mag_axes mode = %d (%s)\n", mode, names[mode]);
-				} else {
-					printk("Invalid mode (use 0-7)\n");
-				}
-			} else {
-				printk("mag_axes: current mode = %d (%s)\n", rft_mag_axes_mode, names[rft_mag_axes_mode]);
-				printk("Usage: mag_axes <0-7>\n");
-				for (int i = 0; i < 8; i++) printk("  %d: %s\n", i, names[i]);
-			}
 		}
 		else if (strcmp(argv[0], command_set) == 0)
 		{
