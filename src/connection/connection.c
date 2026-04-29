@@ -145,14 +145,17 @@ void connection_update_sensor_diag(float disAngle, float biasMag, float sphereR)
 static float sensor_mag_device[3] = {0, 0, 0};  // post-alignment, pre-VQF
 static float sensor_mag_earth[3]  = {0, 0, 0};  // gravity-aligned by gyro+accel quat
 static float sensor_vqf_delta     = 0.0f;       // VQF heading correction (rad)
+static uint8_t sensor_mag_axes_mode = 0;        // current axes-alignment selector
 
 void connection_update_sensor_mag_diag(const float m_device[3],
                                        const float m_earth[3],
-                                       float delta)
+                                       float delta,
+                                       uint8_t mag_axes_mode)
 {
 	memcpy(sensor_mag_device, m_device, sizeof(sensor_mag_device));
 	memcpy(sensor_mag_earth,  m_earth,  sizeof(sensor_mag_earth));
 	sensor_vqf_delta = delta;
+	sensor_mag_axes_mode = mag_axes_mode;
 }
 
 void connection_update_sensor_temp(float temp)
@@ -398,7 +401,9 @@ void connection_write_packet_4() // RFT: full precision quat + d (real-time)
 // [14]=cal_done (0/1), [15]=reserved.
 void connection_write_packet_9()
 {
-	// Layout: [2..7]=mag_device (Q11), [8..13]=magEarth (Q11), [14..15]=delta(Q11)
+	// Layout: [2..7]=mag_device (Q11), [8..13]=magEarth (Q11),
+	//         [14]=delta as int8 Q5 (range ±3.97rad, resolution 1.8°),
+	//         [15]=mag_axes_mode (uint8, 0..7).
 	uint8_t data[16] = {0};
 	data[0] = 9;
 	data[1] = tracker_id;
@@ -409,7 +414,12 @@ void connection_write_packet_9()
 	buf[3] = TO_FIXED_11(sensor_mag_earth[0]);
 	buf[4] = TO_FIXED_11(sensor_mag_earth[1]);
 	buf[5] = TO_FIXED_11(sensor_mag_earth[2]);
-	buf[6] = TO_FIXED_11(sensor_vqf_delta);
+	// delta as int8 Q5: clamp & scale by 32. Range fits ±π fine.
+	float d = sensor_vqf_delta * 32.0f;
+	if (d >  127.0f) d =  127.0f;
+	if (d < -128.0f) d = -128.0f;
+	data[14] = (uint8_t)(int8_t)d;
+	data[15] = sensor_mag_axes_mode;
 	int ret = k_mutex_lock(&data_buffer_mutex, K_MSEC(100));
 	if (ret) {
 		LOG_ERR("Failed mutex lock");

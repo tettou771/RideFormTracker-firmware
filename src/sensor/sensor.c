@@ -1217,7 +1217,8 @@ void sensor_loop(void)
 				float magEarth[3];
 				vqf_get_last_mag_earth(magEarth);
 				float delta = vqf_get_delta();
-				connection_update_sensor_mag_diag(rft_last_m_to_vqf, magEarth, delta);
+				connection_update_sensor_mag_diag(rft_last_m_to_vqf, magEarth,
+				                                  delta, (uint8_t)rft_mag_axes_mode);
 			}
 
 			// RFT experiment: log VQF mag state every 2s regardless of whether

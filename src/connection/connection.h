@@ -43,13 +43,15 @@ void connection_update_sensor_raw_mag(const float m[3]);
 void connection_update_sensor_mag_bias(const float bias[3], bool cal_done);
 
 // RFT diag: vectors that go into VQF's heading disagreement calculation.
-//   m_device = post-alignment mag (input to VQF, in device body frame)
-//   m_earth  = mag rotated into earth frame by gyro+accel-only quat
-//   delta    = VQF heading correction (rad)
+//   m_device       = post-alignment mag (input to VQF, in device body frame)
+//   m_earth        = mag rotated into earth frame by gyro+accel-only quat
+//   delta          = VQF heading correction (rad)
+//   mag_axes_mode  = currently active mag axes alignment selector (0..7)
 //   d == atan2(m_earth.x, m_earth.y) - delta
 void connection_update_sensor_mag_diag(const float m_device[3],
                                        const float m_earth[3],
-                                       float delta);
+                                       float delta,
+                                       uint8_t mag_axes_mode);
 
 // VQF heading disturbance angle (rad, ±π). Sent in packet 4 every frame.
 // (biasMag and sphereR args are ignored — they used to share this slot but
