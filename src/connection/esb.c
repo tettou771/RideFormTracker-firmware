@@ -607,10 +607,13 @@ static void esb_thread(void)
 				       since_last / 1000, ++rft_recover_count);
 				esb_deinitialize();
 				k_msleep(20);
-				int err = esb_initialize(false);
+				/* CRITICAL: tracker is PTX, not PRX. esb_initialize(true)
+				 * = PTX mode (esb_initialize(false) = PRX = receiver
+				 * mode, which would silently break TX and cascade-kill
+				 * ESB across other trackers via pipe contention). */
+				esb_set_addr_paired();
+				int err = esb_initialize(true);
 				if (err == 0) {
-					esb_set_addr_paired();
-					esb_start_rx();
 					printk("RFT_ESB_REINIT: ok\n");
 				} else {
 					printk("RFT_ESB_REINIT: esb_initialize failed err=%d\n", err);
