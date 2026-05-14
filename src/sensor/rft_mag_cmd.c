@@ -16,6 +16,7 @@ LOG_MODULE_REGISTER(rft_mag_cmd, LOG_LEVEL_INF);
 extern void rft_mag_save_bias(const float bias[3]);
 extern void rft_mag_clear_bias(void);
 extern void rft_mag_cal_reset(void);
+extern void rft_set_max_rate_hz(uint8_t hz);
 
 /* Packet 8 streaming flag, read by sensor.c to gate transmission of the
  * raw_mag + bias announcement packet. Default off — tracker stays quiet
@@ -64,6 +65,12 @@ static void rft_mag_cmd_work_handler(struct k_work *work)
 		printk("RFT_CMD: RX MAG_RECAL\n");
 		rft_mag_cal_reset();
 		break;
+	case RFT_CMD_SET_MAX_RATE_HZ: {
+		uint8_t hz = buf[0];
+		printk("RFT_CMD: RX SET_MAX_RATE_HZ=%u\n", hz);
+		rft_set_max_rate_hz(hz);
+		break;
+	}
 	default:
 		printk("RFT_CMD: unknown type %u\n", type);
 		break;

@@ -595,6 +595,33 @@ void sensor_fusion_invalidate(void)
 }
 
 int sensor_update_time_ms = 6;
+/* Remember the firmware's natural loop period so RFT_CMD_SET_MAX_RATE_HZ=0
+ * can restore it. Captured the first time rft_set_max_rate_hz() is called
+ * so whatever sensor_init() ended up setting it to is the "default". */
+static int sensor_default_update_time_ms = 6;
+static bool sensor_default_captured = false;
+
+static void set_update_time_ms(int time_ms);  /* forward decl */
+
+/* RFT: receiver-driven TX rate cap. hz=0 reverts to the firmware default
+ * captured at first call. Clamps to a sane band so a bogus value can't
+ * lock up the loop. */
+void rft_set_max_rate_hz(uint8_t hz)
+{
+	if (!sensor_default_captured) {
+		sensor_default_update_time_ms = sensor_update_time_ms;
+		sensor_default_captured = true;
+	}
+	int ms;
+	if (hz == 0) {
+		ms = sensor_default_update_time_ms;
+	} else {
+		ms = 1000 / hz;
+		if (ms < 3) ms = 3;       /* ~333Hz ceiling */
+		if (ms > 200) ms = 200;   /* 5Hz floor */
+	}
+	set_update_time_ms(ms);
+}
 
 // TODO: get rid of it.. ?
 static void set_update_time_ms(int time_ms)

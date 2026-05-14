@@ -37,6 +37,8 @@
 #define RFT_CMD_CLEAR_MAG_BIAS 2
 #define RFT_CMD_MAG_RECAL      3
 /* RFT_CMD_STREAM_RAW_MAG (=4) was retired; replaced by RFT_FLAG_STREAM_RAW_MAG. */
+#define RFT_CMD_SET_MAX_RATE_HZ 5 /* payload[0]: uint8 Hz, 0 = back to firmware
+                                   * default. RAM only — power cycle reverts. */
 
 #define RFT_CMD_NO_TARGET      0xFF
 
