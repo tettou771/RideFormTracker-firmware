@@ -595,46 +595,51 @@ void sensor_fusion_invalidate(void)
 }
 
 int sensor_update_time_ms = 6;
-/* Remember the firmware's natural loop period so RFT_CMD_SET_MAX_RATE_HZ=0
- * can restore it. Captured the first time rft_set_max_rate_hz() is called
- * so whatever sensor_init() ended up setting it to is the "default". */
-static int sensor_default_update_time_ms = 6;
-static bool sensor_default_captured = false;
+/* RFT: split "what the sensor mode wants" from "what we actually run at".
+ * - sensor_desired_time_ms: the period requested by set_update_time_ms()
+ *   callers (sensor_mode reconfig at LOW_NOISE 6ms / LOW_POWER 33ms /
+ *   LOW_POWER_2 100ms).
+ * - rft_min_update_time_ms: receiver-driven floor (cap). 0 = no cap.
+ * Effective sensor_update_time_ms = max(desired, cap). Mode-driven power
+ * saving still slows the loop; the cap just prevents the active rate
+ * from going faster than requested. RAM-only — power cycle reverts. */
+static int sensor_desired_time_ms = 6;
+static int rft_min_update_time_ms = 0;
 
-static void set_update_time_ms(int time_ms);  /* forward decl */
+static void apply_update_time_ms(void);  /* forward decl */
 
-/* RFT: receiver-driven TX rate cap. hz=0 reverts to the firmware default
- * captured at first call. Clamps to a sane band so a bogus value can't
- * lock up the loop. */
 void rft_set_max_rate_hz(uint8_t hz)
 {
-	if (!sensor_default_captured) {
-		sensor_default_update_time_ms = sensor_update_time_ms;
-		sensor_default_captured = true;
-	}
-	int ms;
 	if (hz == 0) {
-		ms = sensor_default_update_time_ms;
+		rft_min_update_time_ms = 0;
 	} else {
-		ms = 1000 / hz;
+		int ms = 1000 / hz;
 		if (ms < 3) ms = 3;       /* ~333Hz ceiling */
 		if (ms > 200) ms = 200;   /* 5Hz floor */
+		rft_min_update_time_ms = ms;
 	}
-	set_update_time_ms(ms);
+	apply_update_time_ms();
 }
 
 // TODO: get rid of it.. ?
 static void set_update_time_ms(int time_ms)
 {
-	// TODO: maybe not get rid of it? it is now repurposed to also change FIFO threshold
-	// TODO: return pin_config and replace call in sensor_init
+	sensor_desired_time_ms = time_ms;
+	apply_update_time_ms();
+}
+
+static void apply_update_time_ms(void)
+{
+	int t = sensor_desired_time_ms;
+	if (rft_min_update_time_ms > t) t = rft_min_update_time_ms;
+	if (t == sensor_update_time_ms) return;  /* no change → no IMU reconfig */
 #if IMU_INT_EXISTS
-	float fifo_threshold = time_ms / 1000.0f / sensor_actual_time; // target loop rate
+	float fifo_threshold = t / 1000.0f / sensor_actual_time; // target loop rate
 	sensor_fifo_threshold = fifo_threshold;
 	LOG_DBG("FIFO THS/WM/WTM: %.2f -> %d", (double)fifo_threshold, sensor_fifo_threshold);
 	sensor_imu->setup_DRDY(sensor_fifo_threshold); // do not need to reset pin config
 #endif
-	sensor_update_time_ms = time_ms; // TODO: terrible naming
+	sensor_update_time_ms = t; // TODO: terrible naming
 }
 
 bool main_wfi = false;
