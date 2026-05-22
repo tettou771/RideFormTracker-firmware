@@ -146,6 +146,7 @@ static uint8_t sensor_mag_dev_reg = 0xFF;
 
 static float q[4] = {1.0f, 0.0f, 0.0f, 0.0f}; // vector to hold quaternion
 static float last_q[4] = {1.0f, 0.0f, 0.0f, 0.0f}; // vector to hold quaternion
+static int64_t last_tx_time = 0; // RFT: wall-clock gate for TX rate limiting
 
 static float q3[4] = {SENSOR_QUATERNION_CORRECTION}; // correction quaternion
 
@@ -628,10 +629,18 @@ static void set_update_time_ms(int time_ms)
 	apply_update_time_ms();
 }
 
+/* RFT: unconditional ~60Hz ceiling on active TX. The LTE-M / MQTT receiver
+ * path can't carry every tracker at the full ~166Hz LOW_NOISE loop rate, so
+ * floor the loop *period* at 16ms (≈60Hz) regardless of mode. Because the
+ * effective period is a max() of desired/cap/this floor, power-saving modes
+ * (33/100ms) still slow the loop further — this only ever caps the fast end. */
+#define RFT_TX_MIN_PERIOD_MS 50   /* 20 Hz — sized for the LTE/MQTT uplink budget */
+
 static void apply_update_time_ms(void)
 {
 	int t = sensor_desired_time_ms;
 	if (rft_min_update_time_ms > t) t = rft_min_update_time_ms;
+	if (RFT_TX_MIN_PERIOD_MS > t) t = RFT_TX_MIN_PERIOD_MS;
 	if (t == sensor_update_time_ms) return;  /* no change → no IMU reconfig */
 #if IMU_INT_EXISTS
 	float fifo_threshold = t / 1000.0f / sensor_actual_time; // target loop rate
@@ -1333,8 +1342,27 @@ void sensor_loop(void)
 			// Update orientation
 			bool send_quat_data = !q_epsilon(q, last_q, 0.001);
 			bool send_lin_accel_data = !v_epsilon(lin_a, last_lin_a, 0.05);
-			if (send_quat_data || send_lin_accel_data)
+			/* RFT: throttle the actual transmit to sensor_update_time_ms
+			 * (≥16ms ≈ 60Hz active, longer in power-save). Fusion above runs
+			 * on every FIFO sample for full accuracy, but the IMU's data-ready
+			 * fires per-sample so the loop — and this send — would otherwise TX
+			 * at the full ~240Hz, swamping the LTE/MQTT path. The FIFO watermark
+			 * meant to slow the loop isn't effective on this IMU, so gate the
+			 * send by wall clock. last_q/last_lin_a update only on an actual
+			 * send, so change detection compares against what was last sent. */
+			/* Floor the TX period at RFT_TX_MIN_PERIOD_MS ourselves rather
+			 * than trusting sensor_update_time_ms: apply_update_time_ms only
+			 * runs on a mode *change*, so at startup in the active mode
+			 * sensor_update_time_ms can still be the un-floored 6ms. max()
+			 * keeps the 60Hz ceiling unconditionally while still honouring the
+			 * slower periods power-save sets (33/100ms). */
+			int tx_min_ms = sensor_update_time_ms;
+			if (tx_min_ms < RFT_TX_MIN_PERIOD_MS) tx_min_ms = RFT_TX_MIN_PERIOD_MS;
+			int64_t now_tx = k_uptime_get();
+			bool tx_due = (now_tx - last_tx_time) >= tx_min_ms;
+			if ((send_quat_data || send_lin_accel_data) && tx_due)
 			{
+				last_tx_time = now_tx;
 				memcpy(last_q, q, sizeof(q));
 				memcpy(last_lin_a, lin_a, sizeof(lin_a));
 				float q_offset[4];

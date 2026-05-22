@@ -589,7 +589,7 @@ void connection_thread(void)
 			esb_write(data_copy);
 		}
 		// mag is higher priority (skip accel, quat is full precision)
-		else if (mag_update_time && k_uptime_get() - last_mag_time > 200)
+		else if (mag_update_time && k_uptime_get() - last_mag_time > 1000)
 		{
 			mag_update_time = 0; // data has been sent
 			last_mag_time = k_uptime_get();
@@ -623,7 +623,7 @@ void connection_thread(void)
 			continue;
 		}
 		// if time for info and precise quat not needed
-		else if (quat_update_time && !send_precise_quat && k_uptime_get() - last_info_time > 100)
+		else if (quat_update_time && !send_precise_quat && k_uptime_get() - last_info_time > 1000)
 		{
 			quat_update_time = 0;
 			last_quat_time = k_uptime_get();
@@ -632,7 +632,7 @@ void connection_thread(void)
 			continue;
 		}
 		// if time for info2 and precise quat not needed
-		else if (quat_update_time && !send_precise_quat && k_uptime_get() - last_info2_time > 100)
+		else if (quat_update_time && !send_precise_quat && k_uptime_get() - last_info2_time > 1000)
 		{
 			quat_update_time = 0;
 			last_quat_time = k_uptime_get();
@@ -648,13 +648,13 @@ void connection_thread(void)
 			connection_write_packet_1();
 			continue;
 		}
-		else if (k_uptime_get() - last_info_time > 100)
+		else if (k_uptime_get() - last_info_time > 1000)
 		{
 			last_info_time = k_uptime_get();
 			connection_write_packet_0();
 			continue;
 		}
-		else if (k_uptime_get() - last_info2_time > 100)
+		else if (k_uptime_get() - last_info2_time > 1000)
 		{
 			last_info2_time = k_uptime_get();
 			connection_write_packet_6();
