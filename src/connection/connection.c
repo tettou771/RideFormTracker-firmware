@@ -601,12 +601,9 @@ void connection_thread(void)
 		uint8_t my_idx = tdma_anchor_get_slot();
 
 		/* === Primary: pkt1 (full-precision quat + accel). ===
-		 * Build it fresh from the latest sensor_q/sensor_a (kept in sync
-		 * by connection_update_sensor_data() at fusion rate) — calling
-		 * connection_write_packet_1() fills data_buffer and bumps
-		 * last_data_time so the TX below has something to send. */
-		connection_write_packet_1();
-
+		 * Always sent if fresh fusion data is available. The receiver
+		 * gates everything on these arriving — losing one is the worst
+		 * outcome of any per-slot trade-off, so it goes out first. */
 		bool sent_primary = false;
 		if (last_data_time != 0) {
 			int ret = k_mutex_lock(&data_buffer_mutex, K_MSEC(10));
