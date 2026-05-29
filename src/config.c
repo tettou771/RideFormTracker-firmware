@@ -141,28 +141,34 @@ LOG_MODULE_REGISTER(config, LOG_LEVEL_INF);
 
 void config_settings_init(void)
 {
+	/* RFT: ignore per-bit ovrd flags and unconditionally apply Kconfig
+	 * defaults at every boot. The upstream behavior — protecting any value
+	 * a user once wrote against later default changes — is the reason an
+	 * already-fixed `=n` flag in prj.conf still didn't disable auto-sleep
+	 * on trackers that had once been flipped ON via console. We want a bike
+	 * tracker whose behavior is fully source-defined: rebuild + reflash is
+	 * the only source of truth. Console writes still work for live debug
+	 * but won't survive a reboot. */
 	for (int i = 0; i < 16; i++)
 	{
 		uint16_t write_mask = 1 << i;
-		if (!(config_settings->config_0_ovrd & write_mask))
-		{
-			if (config_0_settings_defaults[i])
-				config_settings->config_0_settings |= write_mask;
-			else
-				config_settings->config_0_settings &= ~write_mask;
-		}
-		if (!(config_settings->config_1_ovrd & write_mask))
-		{
-			if (config_1_settings_defaults[i])
-				config_settings->config_1_settings |= write_mask;
-			else
-				config_settings->config_1_settings &= ~write_mask;
-		}
-		if (!(config_settings->config_2_ovrd & write_mask))
-			config_settings->config_2_settings[i] = config_2_settings_defaults[i];
-		if (!(config_settings->config_3_ovrd & write_mask))
-			config_settings->config_3_settings[i] = config_3_settings_defaults[i];
+		if (config_0_settings_defaults[i])
+			config_settings->config_0_settings |= write_mask;
+		else
+			config_settings->config_0_settings &= ~write_mask;
+		if (config_1_settings_defaults[i])
+			config_settings->config_1_settings |= write_mask;
+		else
+			config_settings->config_1_settings &= ~write_mask;
+		config_settings->config_2_settings[i] = config_2_settings_defaults[i];
+		config_settings->config_3_settings[i] = config_3_settings_defaults[i];
 	}
+	/* Clear ovrd too — keeps the retained-mem bitmap clean and avoids
+	 * surprising state if this branch is ever reverted. */
+	config_settings->config_0_ovrd = 0;
+	config_settings->config_1_ovrd = 0;
+	config_settings->config_2_ovrd = 0;
+	config_settings->config_3_ovrd = 0;
 }
 
 void config_0_settings_write(uint16_t id, bool value)

@@ -248,25 +248,27 @@ static int64_t system_off_timeout = 0;
 
 void sys_request_WOM(bool force, bool immediate)
 {
-	if (immediate)
-	{
-		sys_WOM(force);
+	/* RFT: queued (auto) WOM requests are ignored — sensor timeouts no
+	 * longer put the tracker to sleep on the bike. Immediate requests are
+	 * still honored so explicit/critical paths (battery discharge, console
+	 * pwroff) continue to work. */
+	if (!immediate) {
+		LOG_INF("sys_request_WOM: queued request ignored (auto-sleep disabled)");
 		return;
 	}
-	if (force)
-		sys_power_state_request(2);
-	else
-		sys_power_state_request(1);
+	sys_WOM(force);
 }
 
 void sys_request_system_off(bool immediate)
 {
-	if (immediate)
-	{
-		sys_system_off(false);
+	/* RFT: same policy as sys_request_WOM — kill the auto path, keep the
+	 * explicit one. Battery-discharge protection in power.c calls this with
+	 * immediate=true and still works. */
+	if (!immediate) {
+		LOG_INF("sys_request_system_off: queued request ignored (auto-shutdown disabled)");
 		return;
 	}
-	sys_power_state_request(3);
+	sys_system_off(false);
 }
 
 void sys_request_system_reboot(bool immediate)

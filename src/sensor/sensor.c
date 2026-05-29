@@ -634,13 +634,20 @@ static void set_update_time_ms(int time_ms)
  * floor the loop *period* at 16ms (≈60Hz) regardless of mode. Because the
  * effective period is a max() of desired/cap/this floor, power-saving modes
  * (33/100ms) still slow the loop further — this only ever caps the fast end. */
-#define RFT_TX_MIN_PERIOD_MS 50   /* 20 Hz — sized for the LTE/MQTT uplink budget */
+#define RFT_TX_MIN_PERIOD_MS 33   /* 30 Hz — UART1 to BG770A is now 921600 (was 115200),
+                                    enough headroom for 10 trackers × 30 Hz × 20 B */
 
 static void apply_update_time_ms(void)
 {
 	int t = sensor_desired_time_ms;
 	if (rft_min_update_time_ms > t) t = rft_min_update_time_ms;
 	if (RFT_TX_MIN_PERIOD_MS > t) t = RFT_TX_MIN_PERIOD_MS;
+	/* RFT: also cap from above — guarantees the loop never runs slower than
+	 * RFT_TX_MIN_PERIOD_MS regardless of motion mode. Without this, LOW_POWER_2
+	 * (sensor_desired_time_ms=100ms) would drop the rate to 10Hz when stationary
+	 * even with the floor in place. We want a steady 30Hz on the bike even when
+	 * the rider is briefly still (stopped at a light, paddock, etc). */
+	if (t > RFT_TX_MIN_PERIOD_MS) t = RFT_TX_MIN_PERIOD_MS;
 	if (t == sensor_update_time_ms) return;  /* no change → no IMU reconfig */
 #if IMU_INT_EXISTS
 	float fifo_threshold = t / 1000.0f / sensor_actual_time; // target loop rate
@@ -695,84 +702,20 @@ enum sensor_sensor_timeout {
 
 static enum sensor_sensor_timeout sensor_timeout = SENSOR_SENSOR_TIMEOUT_IMU;
 
-// Check the IMU gyroscope // TODO: gyro sanity not used
- // TODO: timeouts and power management should be outside sensor! (e.g. sleeping/shutdown even if the imu completely errored out)
- // all this really means is that this should be called in sensor loop while the sensor is in an error state
+// RFT: stripped-down power management. The SlimeVR original drives a
+// three-way state machine (LOW_NOISE -> LOW_POWER -> LOW_POWER_2) plus
+// activity- and IMU-timeout based WOM / system_off, all gated on NVS flags
+// that can outlive a firmware change. On a bike we want one boring behavior:
+// always-on at the fastest rate the receiver allows. So the function is now
+// a no-op modulo housekeeping — sensor_mode pinned to LOW_NOISE, no sleep,
+// no NVS reads. To re-enable any of it later, restore the original body
+// (see git history) or feature-flag a richer path back in.
 static void sensor_update_sensor_state(void)
 {
-	bool calibrating = get_status(SYS_STATUS_CALIBRATION_RUNNING);
-	bool resting = sensor_fusion->get_gyro_sanity() == 0 ? q_epsilon(q, last_q, 0.005) : q_epsilon(q, last_q, 0.05); // TODO: Probably okay to use the constantly updating last_q?
-	if (!calibrating && resting)
-	{
-		int64_t last_data_delta = k_uptime_get() - last_data_time;
-		if (sensor_mode < SENSOR_SENSOR_MODE_LOW_POWER && last_data_delta > CONFIG_3_SETTINGS_READ(CONFIG_3_SENSOR_LP_TIMEOUT)) // No motion in lp timeout
-		{
-			LOG_INF("No motion from sensors in %dms", CONFIG_3_SETTINGS_READ(CONFIG_3_SENSOR_LP_TIMEOUT));
-			sensor_mode = SENSOR_SENSOR_MODE_LOW_POWER;
-		}
-		int64_t imu_timeout = CLAMP(last_data_time - last_suspend_attempt_time, CONFIG_3_SETTINGS_READ(CONFIG_3_IMU_TIMEOUT_RAMP_MIN), CONFIG_3_SETTINGS_READ(CONFIG_3_IMU_TIMEOUT_RAMP_MAX)); // Ramp timeout from last_data_time
-		if (CONFIG_1_SETTINGS_READ(CONFIG_1_SENSOR_USE_LOW_POWER_2) && sensor_mode < SENSOR_SENSOR_MODE_LOW_POWER_2 && last_data_delta > imu_timeout) // No motion in ramp time
-			sensor_mode = SENSOR_SENSOR_MODE_LOW_POWER_2;
-		if (CONFIG_1_SETTINGS_READ(CONFIG_1_USE_ACTIVE_TIMEOUT))
-		{
-			if (sensor_timeout < SENSOR_SENSOR_TIMEOUT_ACTIVITY && last_data_delta > CONFIG_3_SETTINGS_READ(CONFIG_3_ACTIVE_TIMEOUT_THRESHOLD)) // higher priority than IMU timeout
-			{
-				LOG_INF("Switching to activity timeout");
-				sensor_timeout = SENSOR_SENSOR_TIMEOUT_ACTIVITY;
-			}
-			if (sensor_timeout == SENSOR_SENSOR_TIMEOUT_ACTIVITY && last_data_delta > CONFIG_3_SETTINGS_READ(CONFIG_3_ACTIVE_TIMEOUT_DELAY))
-			{
-				LOG_INF("No motion from sensors in %dm", CONFIG_3_SETTINGS_READ(CONFIG_3_ACTIVE_TIMEOUT_DELAY) / 60000);
-				// Queue power state request, it is possible for the request to be overridden so the thread may continue unaware
-				if (CONFIG_2_SETTINGS_READ(CONFIG_2_ACTIVE_TIMEOUT_MODE) == 0 && CONFIG_0_SETTINGS_READ(CONFIG_0_USE_IMU_WAKE_UP)) {
-					printk("RFT_SHUTDOWN: sensor activity timeout (WOM mode 0)\n");
-					k_msleep(500);
-					sys_request_WOM(true, false);
-				}
-				// Queue power state request, thread will be suspended when entering system_off
-				if (CONFIG_2_SETTINGS_READ(CONFIG_2_ACTIVE_TIMEOUT_MODE) == 1 && CONFIG_0_SETTINGS_READ(CONFIG_0_USER_SHUTDOWN)) {
-					printk("RFT_SHUTDOWN: sensor activity timeout (off mode 1)\n");
-					k_msleep(500);
-					sys_request_system_off(false);
-				}
-				sensor_timeout = SENSOR_SENSOR_TIMEOUT_ACTIVITY_ELAPSED; // only try to suspend once
-			}
-		}
-		if (CONFIG_1_SETTINGS_READ(CONFIG_1_USE_IMU_TIMEOUT) && CONFIG_0_SETTINGS_READ(CONFIG_0_USE_IMU_WAKE_UP) && sensor_timeout == SENSOR_SENSOR_TIMEOUT_IMU && last_data_delta > imu_timeout) // No motion in ramp time
-		{
-			LOG_INF("No motion from sensors in %llds", imu_timeout / 1000);
-			printk("RFT_SHUTDOWN: imu_timeout (no motion %llds) -> WOM\n", imu_timeout / 1000);
-			k_msleep(500);
-			// Queue power state request
-			sys_request_WOM(false, false);
-			sensor_timeout = SENSOR_SENSOR_TIMEOUT_IMU_ELAPSED; // only try to suspend once
-		}
-		// Update timeout estimate
-		switch (sensor_timeout)
-		{
-		case SENSOR_SENSOR_TIMEOUT_ACTIVITY:
-			connection_update_sensor_timeout_time(CONFIG_3_SETTINGS_READ(CONFIG_3_ACTIVE_TIMEOUT_DELAY) - last_data_delta);
-			break;
-		case SENSOR_SENSOR_TIMEOUT_IMU:
-			if (CONFIG_1_SETTINGS_READ(CONFIG_1_USE_IMU_TIMEOUT) && CONFIG_0_SETTINGS_READ(CONFIG_0_USE_IMU_WAKE_UP))
-			{
-				connection_update_sensor_timeout_time(imu_timeout - last_data_delta);
-				break;
-			}
-		default:
-			connection_update_sensor_timeout_time(INT64_MAX);
-		}
-	}
-	else
-	{
-		if (sensor_mode == SENSOR_SENSOR_MODE_LOW_POWER_2 || sensor_timeout == SENSOR_SENSOR_TIMEOUT_IMU_ELAPSED)
-			last_suspend_attempt_time = k_uptime_get();
-		last_data_time = k_uptime_get();
-		if (sensor_timeout == SENSOR_SENSOR_TIMEOUT_IMU_ELAPSED) // Resetting IMU timeout
-			sensor_timeout = SENSOR_SENSOR_TIMEOUT_IMU;
-		sensor_mode = SENSOR_SENSOR_MODE_LOW_NOISE;
-		connection_update_sensor_timeout_time(INT64_MAX);
-	}
+	sensor_mode = SENSOR_SENSOR_MODE_LOW_NOISE;
+	sensor_timeout = SENSOR_SENSOR_TIMEOUT_IMU;
+	last_data_time = k_uptime_get();
+	connection_update_sensor_timeout_time(INT64_MAX);
 }
 
 int sensor_init(void)
