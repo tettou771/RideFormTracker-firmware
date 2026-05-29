@@ -26,8 +26,6 @@
 #include "build_defines.h"
 #include "hid.h"
 #include "system/battery_tracker.h"
-#include "tdma_anchor.h"
-#include "tdma_proto.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/sys/crc.h>
@@ -567,99 +565,117 @@ static int64_t last_info2_time = 0;
 static int64_t last_status_time = 0;
 static int64_t last_status2_time = 0;
 
-// RFT TDMA: connection_thread is now slot-driven. Each iteration blocks on
-// tdma_anchor_wait_slot() which fires:
-//   - on the per-slot hardware timer when we have a TIMING ACK anchor
-//     (TRACKING state, slot-locked to the receiver),
-//   - on the 1 s ALOHA timer when the slot is set but no TIMING ACK has
-//     arrived recently (DISCOVERY state — slow broadcast, lets the
-//     receiver lock us in without contributing meaningfully to collisions),
-//   - or just returns from a long sleep when the slot is unset (SILENT —
-//     no TX at all; the receiver decides our slot via PKT_SET_SLOT_INDEX
-//     after pair).
-//
-// Per slot we always TX pkt1 (the receiver's primary signal). Once every
-// TDMA_HOUSEKEEPING_PERIOD_MAG_D cycles a secondary packet rides along:
-// pkt4 (mag diagnostic) by default; pkt8 / pkt9 (raw mag stream) chained
-// into the next two mag ticks when the PC has requested the mag stream.
-// Battery / device-info goes out every TDMA_HOUSEKEEPING_PERIOD_BATTERY
-// cycles (~10 s @ 30 Hz). The receiver-side housekeeping rotation key is
-// `cycle_counter % period == my_slot_index` so the 10 trackers stagger.
 void connection_thread(void)
 {
 	uint8_t data_copy[21];
-	enum { STREAM_NONE = 0, STREAM_NEXT_PKT8, STREAM_NEXT_PKT9 } stream_state = STREAM_NONE;
-
+	bool pkt8_pending = false;
+	bool pkt9_pending = false;
+	// TODO: checking for connection_update events from sensor_loop, here we will time and send them out
 	while (1)
 	{
-		uint32_t cycle = tdma_anchor_wait_slot();
-		tdma_anchor_state_t st = tdma_anchor_get_state();
-		if (st == TDMA_ANCHOR_SILENT) continue;  /* unset slot — no TX */
-
-		uint8_t my_idx = tdma_anchor_get_slot();
-
-		/* === Primary: pkt1 (full-precision quat + accel). ===
-		 * Always sent if fresh fusion data is available. The receiver
-		 * gates everything on these arriving — losing one is the worst
-		 * outcome of any per-slot trade-off, so it goes out first. */
-		bool sent_primary = false;
-		if (last_data_time != 0) {
-			int ret = k_mutex_lock(&data_buffer_mutex, K_MSEC(10));
-			if (!ret) {
-				last_data_time = 0;
-				memcpy(data_copy, data_buffer, sizeof(data_copy));
-				k_mutex_unlock(&data_buffer_mutex);
-				data_copy[20] = packet_sequence++;
-				uint32_t *crc_ptr = (uint32_t *)&data_copy[16];
-				*crc_ptr = crc32_k_4_2_update(0x93a409eb, data_copy, 16);
-				esb_write(data_copy);
-				sent_primary = true;
+		if (last_data_time != 0) // have valid data
+		{
+			int ret = k_mutex_lock(&data_buffer_mutex, K_MSEC(100));
+			if (ret) {
+				LOG_ERR("Failed mutex lock");
+				continue;
 			}
+			last_data_time = 0;
+			memcpy(data_copy, data_buffer, sizeof(data_copy));
+			k_mutex_unlock(&data_buffer_mutex);
+			data_copy[20] = packet_sequence++;
+			uint32_t *crc_ptr = (uint32_t *)&data_copy[16];
+			*crc_ptr = crc32_k_4_2_update(0x93a409eb, data_copy, 16);
+			esb_write(data_copy);
 		}
-
-		/* In DISCOVERY mode the housekeeping rotation has no useful
-		 * cycle anchor — we'd be picking a slot blindly. Just send the
-		 * primary (or nothing if fusion hasn't produced data yet) and
-		 * wait for the receiver to lock us in. */
-		if (st != TDMA_ANCHOR_TRACKING) continue;
-
-		/* === Secondary: at most one housekeeping packet per slot,
-		 * rotated by cycle_counter so the 10 trackers stagger. The
-		 * busy_wait lets the primary TX leave the ESB FIFO before the
-		 * secondary's esb_write() flushes it — without this, calling
-		 * esb_write() twice back-to-back drops the first. ESB ramp-up
-		 * is ~140 µs and 16 B at 2 Mbps is ~80 µs, so 300 µs is a
-		 * conservative margin. (A non-flushing esb_write_chain would
-		 * be cleaner but needs care in the ESB driver layer.) */
-		bool want_secondary = false;
-		if (stream_state == STREAM_NEXT_PKT8 ||
-		    stream_state == STREAM_NEXT_PKT9) {
-			want_secondary = true;
-		} else if ((cycle % TDMA_HOUSEKEEPING_PERIOD_BATTERY) == my_idx) {
-			want_secondary = true;
-		} else if ((cycle % TDMA_HOUSEKEEPING_PERIOD_MAG_D) == my_idx) {
-			want_secondary = true;
-		}
-		if (!want_secondary) continue;
-
-		if (sent_primary) k_busy_wait(300);   /* let pkt1 clear FIFO */
-
-		extern volatile bool rft_mag_stream_enabled;
-		if (stream_state == STREAM_NEXT_PKT8) {
-			connection_write_packet_8();
-			stream_state = rft_mag_stream_enabled ? STREAM_NEXT_PKT9 : STREAM_NONE;
-		} else if (stream_state == STREAM_NEXT_PKT9) {
-			connection_write_packet_9();
-			stream_state = STREAM_NONE;
-		} else if ((cycle % TDMA_HOUSEKEEPING_PERIOD_BATTERY) == my_idx) {
-			/* device info incl. battery + temp + RSSI */
-			connection_write_packet_2();
-		} else if ((cycle % TDMA_HOUSEKEEPING_PERIOD_MAG_D) == my_idx) {
+		// mag is higher priority (skip accel, quat is full precision)
+		else if (mag_update_time && k_uptime_get() - last_mag_time > 1000)
+		{
+			mag_update_time = 0; // data has been sent
+			last_mag_time = k_uptime_get();
 			connection_write_packet_4();
-			/* If the PC has the mag stream open, chain pkt8/pkt9 into
-			 * the next two mag ticks. They share data_buffer with pkt4
-			 * so we can't fire them in the same slot. */
-			if (rft_mag_stream_enabled) stream_state = STREAM_NEXT_PKT8;
+			// Packet 8 (raw mag + bias) only when PC has requested the stream.
+			// We can't write pkt8 in the same iteration because it shares
+			// data_buffer with pkt4 — pkt8 would overwrite pkt4 before the
+			// ESB drain on the next loop iter, starving the receiver of
+			// d/quat updates. Defer to the next iteration so pkt4 drains
+			// first, then pkt8 fills data_buffer for the iter after that.
+			extern volatile bool rft_mag_stream_enabled;
+			if (rft_mag_stream_enabled) {
+				pkt8_pending = true;
+			}
+			continue;
 		}
+		else if (pkt8_pending)
+		{
+			pkt8_pending = false;
+			connection_write_packet_8();
+			extern volatile bool rft_mag_stream_enabled;
+			if (rft_mag_stream_enabled) {
+				pkt9_pending = true;
+			}
+			continue;
+		}
+		else if (pkt9_pending)
+		{
+			pkt9_pending = false;
+			connection_write_packet_9();
+			continue;
+		}
+		// if time for info and precise quat not needed
+		else if (quat_update_time && !send_precise_quat && k_uptime_get() - last_info_time > 1000)
+		{
+			quat_update_time = 0;
+			last_quat_time = k_uptime_get();
+			last_info_time = k_uptime_get();
+			connection_write_packet_2();
+			continue;
+		}
+		// if time for info2 and precise quat not needed
+		else if (quat_update_time && !send_precise_quat && k_uptime_get() - last_info2_time > 1000)
+		{
+			quat_update_time = 0;
+			last_quat_time = k_uptime_get();
+			last_info2_time = k_uptime_get();
+			connection_write_packet_7();
+			continue;
+		}
+		// send quat otherwise
+		else if (quat_update_time)
+		{
+			quat_update_time = 0;
+			last_quat_time = k_uptime_get();
+			connection_write_packet_1();
+			continue;
+		}
+		else if (k_uptime_get() - last_info_time > 1000)
+		{
+			last_info_time = k_uptime_get();
+			connection_write_packet_0();
+			continue;
+		}
+		else if (k_uptime_get() - last_info2_time > 1000)
+		{
+			last_info2_time = k_uptime_get();
+			connection_write_packet_6();
+			continue;
+		}
+		else if (k_uptime_get() - last_status_time > 1000)
+		{
+			last_status_time = k_uptime_get();
+			connection_write_packet_3();
+			continue;
+		}
+		else if (k_uptime_get() - last_status2_time > 1000)
+		{
+			last_status2_time = k_uptime_get();
+			connection_write_packet_5();
+			continue;
+		}
+		else
+		{
+			connection_clocks_request_stop();
+		}
+		k_msleep(1); // TODO: should be getting timing from receiver, for now just send asap
 	}
 }

@@ -3,7 +3,6 @@
 	See rft_mag_cmd.h for protocol description.
 */
 #include "rft_mag_cmd.h"
-#include "connection/tdma_anchor.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -70,12 +69,6 @@ static void rft_mag_cmd_work_handler(struct k_work *work)
 		uint8_t hz = buf[0];
 		printk("RFT_CMD: RX SET_MAX_RATE_HZ=%u\n", hz);
 		rft_set_max_rate_hz(hz);
-		break;
-	}
-	case RFT_CMD_SET_SLOT_INDEX: {
-		uint8_t idx = buf[0];
-		printk("RFT_CMD: RX SET_SLOT_INDEX=%u\n", idx);
-		tdma_anchor_set_slot(idx);
 		break;
 	}
 	default:
