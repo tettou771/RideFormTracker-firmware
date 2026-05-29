@@ -594,9 +594,7 @@ void connection_thread(void)
 	{
 		uint32_t cycle = tdma_anchor_wait_slot();
 		tdma_anchor_state_t st = tdma_anchor_get_state();
-		/* SILENT is unreachable in practice — see tdma_anchor_wait_slot().
-		 * Even a tracker with no slot index TXes at 1 Hz so the receiver
-		 * can deliver SET_SLOT_INDEX via cmd-ACK piggyback. */
+		if (st == TDMA_ANCHOR_SILENT) continue;  /* unset slot — no TX */
 
 		uint8_t my_idx = tdma_anchor_get_slot();
 
