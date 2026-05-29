@@ -21,13 +21,6 @@
 
 #define MAIN_SENSOR_DATA_ID 31
 
-/* RFT TDMA: tracker's own slot index inside the receiver's paired_addr[]
- * array (0..MAX_SENSORS-1). Receiver tells the tracker its index via
- * RFT_CMD_SET_SLOT_INDEX (right after pair, or on `broadcast_index`),
- * tracker persists here so the slot survives a reboot. 0xFF = unset
- * → tracker stays silent until receiver assigns one. */
-#define RFT_TRACKER_SLOT_ID 32
-
 int sys_get_die_temperature(float *ptr);
 
 void configure_sense_pins(void);

@@ -39,11 +39,6 @@
 /* RFT_CMD_STREAM_RAW_MAG (=4) was retired; replaced by RFT_FLAG_STREAM_RAW_MAG. */
 #define RFT_CMD_SET_MAX_RATE_HZ 5 /* payload[0]: uint8 Hz, 0 = back to firmware
                                    * default. RAM only — power cycle reverts. */
-#define RFT_CMD_SET_SLOT_INDEX  6 /* payload[0]: uint8 slot index (0..MAX_SENSORS-1).
-                                   * Tracker stores in NVS (RFT_TRACKER_SLOT_ID).
-                                   * Sent by the receiver right after pair completes
-                                   * or in response to the `broadcast_index` console
-                                   * command. See tdma_proto.h / PLAN_tdma.md. */
 
 #define RFT_CMD_NO_TARGET      0xFF
 
