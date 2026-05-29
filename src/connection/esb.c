@@ -32,6 +32,7 @@
 #include <zephyr/sys/reboot.h>
 
 #include "esb.h"
+#include "tdma_anchor.h"
 
 uint8_t last_reset = 0;
 //const nrfx_timer_t m_timer = NRFX_TIMER_INSTANCE(1);
@@ -146,11 +147,22 @@ void event_handler(struct esb_evt const *event)
 			}
 			else
 			{
-				/* RFT-extended sync packet: 12 bytes. Bytes [0..1] are LED
-				 * clock; [2..11] is an optional command slot dispatched to
-				 * the mag-cal handler. Old upstream length-4 sync also tolerated
-				 * (LED clock only). */
-				if (rx_payload.length == 12 || rx_payload.length == 4)
+				/* RFT TDMA: discriminate between a TIMING ACK (data[0]=0xFB,
+				 * see firmware/src/connection/tdma_proto.h) and the legacy
+				 * CMD ACK (data[0..1] = LED clock, data[2..11] = rft_cmd).
+				 * Captures the receive timestamp in microseconds *first*
+				 * so the slot scheduler has the freshest possible anchor —
+				 * any further branching adds latency. */
+				int64_t rx_uptime_us = k_ticks_to_us_floor64(k_uptime_ticks());
+
+				if (rx_payload.length == 12 &&
+				    tdma_anchor_on_ack_rx(rx_payload.data, rx_payload.length,
+				                          rx_uptime_us)) {
+					/* Consumed as TIMING — no LED clock or cmd path. */
+					timer_state = true;
+					last_reset = 0;
+				}
+				else if (rx_payload.length == 12 || rx_payload.length == 4)
 				{
 					timer_state = true;
 					last_reset = 0;
