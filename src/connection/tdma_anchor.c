@@ -149,22 +149,20 @@ bool tdma_anchor_on_ack_rx(const uint8_t *payload, uint8_t len, int64_t rx_uptim
 
 uint32_t tdma_anchor_wait_slot(void)
 {
-    /* SILENT: no slot. Sleep coarsely so the caller doesn't spin. */
-    if (slot_index == TDMA_SLOT_UNSET) {
-        k_msleep(500);
-        return 0;
-    }
-
-    /* If we haven't seen a TIMING ACK recently, we're in DISCOVERY mode.
-     * Ensure the periodic discovery timer is running and wait on the
-     * trigger. */
-    int64_t now_ms     = k_uptime_get();
-    bool    tracking   = (now_ms - last_timing_ms) < TDMA_ANCHOR_LOSS_MS;
+    /* If we have neither a slot nor a recent TIMING ACK, we're in
+     * DISCOVERY: free-run ALOHA at TDMA_DISCOVERY_PERIOD_MS so the
+     * receiver can ACK us back with SET_SLOT_INDEX (slot unset) or a
+     * fresh TIMING (anchor lost). The original "stay silent if slot
+     * unset" design was a dead end — the cmd path needs a tracker TX
+     * to ride the ACK back on, so silent = receiver can never reach us. */
+    int64_t now_ms = k_uptime_get();
+    bool tracking = (slot_index != TDMA_SLOT_UNSET) &&
+                    (now_ms - last_timing_ms < TDMA_ANCHOR_LOSS_MS);
     if (!tracking && !discovery_running) {
         k_timer_start(&discovery_timer, K_MSEC(TDMA_DISCOVERY_PERIOD_MS),
                       K_MSEC(TDMA_DISCOVERY_PERIOD_MS));
         discovery_running = true;
-        LOG_INF("TDMA anchor: DISCOVERY (no timing >%dms)", TDMA_ANCHOR_LOSS_MS);
+        LOG_INF("TDMA anchor: DISCOVERY (slot=%u, ALOHA at 1Hz)", slot_index);
     }
 
     k_sem_take(&slot_trigger, K_FOREVER);
@@ -173,7 +171,11 @@ uint32_t tdma_anchor_wait_slot(void)
 
 tdma_anchor_state_t tdma_anchor_get_state(void)
 {
-    if (slot_index == TDMA_SLOT_UNSET) return TDMA_ANCHOR_SILENT;
-    if (k_uptime_get() - last_timing_ms < TDMA_ANCHOR_LOSS_MS) return TDMA_ANCHOR_TRACKING;
+    /* SILENT is now reserved for "haven't even booted yet"; we never reach
+     * it in steady state — see tdma_anchor_wait_slot() for why. */
+    if (slot_index != TDMA_SLOT_UNSET &&
+        k_uptime_get() - last_timing_ms < TDMA_ANCHOR_LOSS_MS) {
+        return TDMA_ANCHOR_TRACKING;
+    }
     return TDMA_ANCHOR_DISCOVERY;
 }
