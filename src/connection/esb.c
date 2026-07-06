@@ -288,7 +288,7 @@ int esb_initialize(bool tx)
 		// config.protocol = ESB_PROTOCOL_ESB_DPL;
 		// config.mode = ESB_MODE_PTX;
 		config.event_handler = event_handler;
-		// config.bitrate = ESB_BITRATE_2MBPS;
+		config.bitrate = ESB_BITRATE_1MBPS;  // RFT: +6 dB sensitivity vs 2 Mbps for body-blocked back sensors. nRF52840 has no 250 kbps mode.
 		// config.crc = ESB_CRC_16BIT;
 		config.tx_output_power = CONFIG_2_SETTINGS_READ(CONFIG_2_RADIO_TX_POWER);
 		// config.retransmit_delay = 600;
@@ -303,7 +303,7 @@ int esb_initialize(bool tx)
 		// config.protocol = ESB_PROTOCOL_ESB_DPL;
 		config.mode = ESB_MODE_PRX;
 		config.event_handler = event_handler;
-		// config.bitrate = ESB_BITRATE_2MBPS;
+		config.bitrate = ESB_BITRATE_1MBPS;  // RFT: +6 dB sensitivity vs 2 Mbps for body-blocked back sensors. nRF52840 has no 250 kbps mode.
 		// config.crc = ESB_CRC_16BIT;
 		config.tx_output_power = CONFIG_2_SETTINGS_READ(CONFIG_2_RADIO_TX_POWER);
 		// config.retransmit_delay = 600;
